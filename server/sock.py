@@ -2,24 +2,25 @@ import socket
 
 
 class BaseSocket:
-    def __init__(self, family: socket.AddressFamily, type: socket.SocketType, host: str, port: int, backlog: int = 1):
-        self.family = family
-        self.type = type
+    def __init__(self, host: str, port: int, backlog: int):
         self.host = host
         self.port = port
         self.backlog = backlog
-        self.sock = None
+        self.sock: socket.socket = None
 
-    def __enter__(self) -> socket.socket:
-        sock = socket.socket(self.family, self.type)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock = sock
+    def init_socket(self):
+        # implement this in subclasses cuz basesocket cant accept family and type
+        raise NotImplementedError()
 
-        sock.bind((self.host, self.port))
-        sock.listen(self.backlog)
+    def deploy(self) -> socket.socket:
+        self.init_socket()
+        self.sock.bind((self.host, self.port))
+        self.sock.listen(self.backlog)
 
-        return sock
+        return self.sock
     
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.sock.close()
-        return 0
+
+class TCPsocket(BaseSocket):
+    def init_socket(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
