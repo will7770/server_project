@@ -9,7 +9,6 @@ class BaseSocket:
         self.sock: socket.socket = None
 
     def init_socket(self):
-        # implement this in subclasses cuz basesocket cant accept family and type
         raise NotImplementedError()
 
     def deploy(self) -> socket.socket:
@@ -23,4 +22,6 @@ class BaseSocket:
 class TCPsocket(BaseSocket):
     def init_socket(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.setblocking(0)
