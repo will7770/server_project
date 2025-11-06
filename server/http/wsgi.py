@@ -1,48 +1,30 @@
 import socket
-from ..sock import TCPsocket
-from .handlers import Request, Response
+from ..sock import TCPsocket, BaseSocket, create_sockets
 import logging
 import signal
+from ..workers.base import BaseWorker
 from ..utils import init_signals, Logger
 import datetime
 import typing
 from ..errors import *
-from ..config import init_args, init_debug_args
 import errno
+import time
+import selectors
+from ..config import Config
 
 
 
 class Server:
-    def __init__(self, app: typing.Callable, host: str = 'localhost', port: int = 8000, backlog: int = 2048):
-        self.app: typing.Callable = app
-        self.host: str = host
-        self.port: int = port
-        self.backlog: int = backlog
-        self.running: bool = False
-        self.server_socket: socket.socket = None
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+
+        self.app: typing.Callable = cfg.app
+        self.bind: list[tuple[str, str]] = cfg.bind
+        self.backlog: int = cfg.backlog
+        self.server_sockets: list[socket.socket] = None
+        self.worker: BaseWorker = cfg.workertype
+
         self.logger = logging.getLogger(__name__)
-
-
-    def handle_request(self, client: socket.socket, app: typing.Callable, addr: str):
-        try:
-            request = Request()
-            response = Response(client)
-            
-            try:
-                request.build_request(client)
-            except (ClientDisconnect, ConnectionResetError):
-                client.shutdown(socket.SHUT_RDWR)
-                client.close()
-                return
-        
-            environ = request.build_environ()
-
-            app_result = response.handle_app(app, environ)
-            # release resources
-            if hasattr(app_result, 'close'):
-                app_result.close()
-        finally:
-            client.close()
 
 
     def run(self):
@@ -50,41 +32,32 @@ class Server:
             self.prepare_server()
         except Exception:
             self.logger.fatal("Failed to prepare the server", exc_info=True)
+            return
 
-        self.running = True
+        # deploy sockets, retry up to 3 times with a timeout
+        for att in range(3):
+            try:
+                self.server_sockets = create_sockets(self.bind, self.backlog)
+                break
+            except OSError as e:
+                if e.errno == errno.EADDRINUSE:
+                    self.logger.critical(f"Couldnt bind to adress {self.host}:{self.port}, attempt {att}/3")
+                time.sleep(2)
 
-        self.server_socket = TCPsocket(self.host, self.port, self.backlog).deploy()
-
-        self.logger.info(f'Serving on {self.host}:{self.port}')
+        self.worker = self.worker(app=self.app, listeners=self.server_sockets)
+        # log where we listen
+        for sock in self.server_sockets:
+            address, port = sock.getsockname()
+            self.logger.info(f'Serving on http://{address}:{port}')
         try:
-            while self.running:
-                try:
-                    client, remote_addr = self.server_socket.accept()
-                    client.setblocking(0)
-                    self.logger.info("Received connection from %s", remote_addr)
-
-                    self.handle_request(client, self.app, remote_addr)
-                except OSError as e:
-                    if e.errno not in (errno.EAGAIN, errno.ECONNABORTED, errno.EWOULDBLOCK):
-                        raise
-                    if not self.running:
-                        break
-                    continue
+            self.worker.run()
         finally:
             self.finish()
 
 
     def prepare_server(self):
-        init_signals([
-        (signal.SIGINT, self.sigint_handler)
-        ])
-
-
-    def sigint_handler(self, signum, frame):
-        self.logger.info('SIGINT received, finishing the process. . .')
-        self.running = False
+        pass
 
 
     def finish(self):
-        self.server_socket.close()
         self.logger.info("Process finished.")

@@ -41,7 +41,7 @@ class Response:
             raise AssertionError("Response had already been started")
         
         self.status = status
-
+        self.headers = response_headers
         self.send_headers()
 
         def write(data):
@@ -51,8 +51,6 @@ class Response:
                 except AttributeError:
                     raise IncorrectWriteInvocation
             self.sock.sendall(data)
-
-        self.headers = response_headers
 
         return write
     
