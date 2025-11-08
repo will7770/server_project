@@ -7,7 +7,7 @@ import logging
 
 
 def run():
-    logger = Logger('info')
+    logger = Logger('debug')
     logger.init_logger()
 
     runner_logger = logging.Logger(__name__)

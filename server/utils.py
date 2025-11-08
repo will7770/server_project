@@ -12,6 +12,7 @@ def find_application(path_or_callable: str | typing.Callable) -> typing.Callable
     if callable(path_or_callable):
         return path_or_callable
 
+    path = path_or_callable
     if not ':' in path:
         raise ValueError("Invalid path format")
     full_path = path.split(':', 1)

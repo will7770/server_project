@@ -13,9 +13,9 @@ class InvalidAppReturnType(ApplicationException):
         super().__init__("Application must return an iterable of bytestrings (b'')")
 
 
-class IncorrectWriteInvocation(ApplicationException):
+class IncorrectWriteArgument(ApplicationException):
     def __init__(self):
-        super().__init__("Bytes must be passed int write()")
+        super().__init__("Bytes must be passed into write()")
 
 
 class FatalConfigException(Exception):

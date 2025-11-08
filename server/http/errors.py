@@ -9,7 +9,7 @@ class MalformedRequestLineError(RequestBuildingError):
 
 
 class IncorrectHeadersFormat(RequestBuildingError):
-    def __init__(self, headers: bytes):
+    def __init__(self, headers: bytes | str):
         self.headers = headers
         super().__init__(f"Incorrect header format {headers}")
 

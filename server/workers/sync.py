@@ -23,42 +23,43 @@ class SyncWorker(BaseWorker):
 
         try:
             while self.alive:
-                try:
-                    events = selector.select(self.server_sock_timeout)
-                    for key, mask in events:
-                        if key.data is None:
+                events = selector.select(self.server_sock_timeout)
+
+                for key, mask in events:
+                    if key.data is None:
+                        try:
                             self.accept(key.fileobj)
-                except OSError as e:
-                    if e.errno not in (errno.EAGAIN, errno.ECONNABORTED, errno.EWOULDBLOCK):
-                        raise
+                        except OSError as e:
+                            if e.errno not in (errno.EAGAIN, errno.ECONNABORTED, errno.EWOULDBLOCK):
+                                raise
+                            
                     if not self.alive:
                         break
         finally:
             self.close()
-            selector.close()
 
 
     def handle_request(self, client: socket.socket, addr: str):
         try:
             request = Request()
             response = Response(client)
-            
-            try:
-                request.build_request(client)
-            except (ClientDisconnect, ConnectionResetError):
-                client.shutdown(socket.SHUT_RDWR)
-                client.close()
-                return
         
-            environ = request.build_environ()
+            request.build_request(client)
+        
+            environ = response.build_environ(request)
 
             app_result = response.handle_app(self.app, environ)
             # release resources
             if hasattr(app_result, 'close'):
                 app_result.close()
+
         except TimeoutError:
             self.logger.debug("Client %s timed out", addr)
+        except (ClientDisconnect, ConnectionResetError):
+            self.logger.debug("Client %s disconnected / reset", addr)
+
         finally:
+            client.shutdown(socket.SHUT_RDWR)
             client.close()
 
 
@@ -73,6 +74,7 @@ class SyncWorker(BaseWorker):
         self.alive = False
         for sock in self.listeners:
             self.selector.unregister(sock)
+        self.selector.close()
         self.close_sockets()
 
 

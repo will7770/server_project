@@ -15,7 +15,7 @@ class BaseWorker:
         self.selector: selectors.BaseSelector = selectors.DefaultSelector
         self.alive = False
         self.logger = logging.getLogger(__name__)
-        self.server_sock_timeout: int | float = 0.5 # how much time we wait for if there are no connections in the backlog
+        self.server_sock_timeout: int | float = 0.5 # time we make the selector wait for if there are no data in any descriptors
         self.client_sock_timeout: int | float = 15 # how much we let the client sock hang for before closing it
 
 

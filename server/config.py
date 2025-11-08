@@ -72,8 +72,8 @@ def init_config(debug: bool = False) -> Config:
 
     parser = argparse.ArgumentParser()
     parser.add_argument('app', type=str)
-    parser.add_argument('--bind', type=str, default='127.0.0.1:8000', nargs='+')
-    parser.add_argument('--workertype', type=str)
+    parser.add_argument('--bind', type=str, default=['127.0.0.1:8000'], nargs='+')
+    parser.add_argument('--workertype', type=str, default='sync')
 
     args = parser.parse_args()
     config = Config()
