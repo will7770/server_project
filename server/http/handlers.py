@@ -7,6 +7,7 @@ from ..errors import *
 import datetime
 import re
 import mmap
+import os
 
 
 
@@ -18,6 +19,9 @@ HEADER_VALUE_RE = re.compile(r'[ \t\x21-\x7e\x80-\xff]*')
 
 
 class Response:
+    __slots__ = ('sock', 'response_length', 'status', 'headers_sent',
+                 'headers', 'sent', 'body')
+
     def __init__(self, sock: socket.socket):
         self.sock: socket.socket = sock
         self.response_length: int = None
@@ -79,10 +83,40 @@ class Response:
         self.sock.sendall(to_send)
 
 
+    def write_file(self, file_wrapper):
+        if not hasattr(file_wrapper.filelike, 'fileno'):
+            return False
+        
+        fileno = file_wrapper.filelike.fileno()
+
+        try:
+            offset = os.lseek(fileno, 0, os.SEEK_CUR)
+            if not self.response_length:
+                size = os.fstat(fileno)
+                self.response_length = size - offset
+        except (OSError, io.UnsupportedOperation):
+            return False
+        
+        self.send_headers()
+
+        if self.response_length > 0:
+            self.sock.sendfile(file_wrapper.filelike, offset, self.response_length)
+
+        os.lseek(fileno, offset, os.SEEK_SET)
+
+        return True
+
+
     def handle_app(self, app: typing.Callable, environ: dict):
         app_result = app(environ, self.start_response)
-        for chunk in app_result:
-            self.write(chunk)
+
+        if isinstance(app_result, FileWrapper):
+            if not self.write_file(app_result):
+                for chunk in app_result: self.write(chunk)
+
+        else:
+            for chunk in app_result:
+                self.write(chunk)
         # some wsgi apps close their resources, return to make it possible
         return app_result
     
@@ -144,20 +178,24 @@ class Response:
 
 
 class Request:
+    __slots__ = ('body', 'bufsize', 'content_len', 'headers', 'method',
+                  'path', 'proto')
+    
+    max_header_size = 16384
+
     def __init__(self):
         self.body = io.BytesIO()
         self.bufsize = 8192
         self.content_len = 0
         self.headers = []
-        self.max_header_size = 16384
         
 
     def build_request(self, sock: socket.socket):
         # begin reading request line and headers
         buf = b""
         while b"\r\n\r\n" not in buf:
-            if len(buf) > self.max_header_size:
-                raise HeaderOverflow(self.max_header_size)
+            if len(buf) > Request.max_header_size:
+                raise HeaderOverflow(Request.max_header_size)
             
             chunk = sock.recv(self.bufsize)
             if chunk == b'':
@@ -222,30 +260,12 @@ class FileWrapper:
         if hasattr(self.filelike, 'close'):
             self.close = self.filelike.close
 
-        # try using the cool memory map or fall back to regular file reading if we cant
-        try:
-            self.mm = mmap.mmap(self.filelike.fileno(), 0, access=mmap.ACCESS_READ)
-            self.read = 0
-        except Exception as e:
-            print(str(e))
-            self.mm = None
 
     def __iter__(self):
         return self
     
+
     def __next__(self):
-        if not self.mm:
-            data = self.filelike.read(self.chunk)
-            if not data:
-                raise StopIteration
-            return data
-
-        end = min(self.read+self.chunk, len(self.mm))
-        data = self.mm[self.read:end]
-
+        data = self.filelike.read(self.chunk)
         if not data:
-            self.mm.close()
             raise StopIteration
-        self.read += len(data)
-        
-        return data
