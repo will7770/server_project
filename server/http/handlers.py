@@ -8,6 +8,8 @@ import datetime
 import re
 import mmap
 import os
+import logging
+
 
 
 
@@ -20,7 +22,7 @@ HEADER_VALUE_RE = re.compile(r'[ \t\x21-\x7e\x80-\xff]*')
 
 class Response:
     __slots__ = ('sock', 'response_length', 'status', 'headers_sent',
-                 'headers', 'sent', 'body')
+                 'headers', 'sent', 'body', 'logger')
 
     def __init__(self, sock: socket.socket):
         self.sock: socket.socket = sock
@@ -29,7 +31,8 @@ class Response:
         self.headers_sent: bool = False
         self.headers: list[tuple[str, str]] = []
         self.sent: int = 0
-        self.body = io.BytesIO()
+        self.body: bytearray = None
+        self.logger = logging.getLogger(__name__)
 
 
     def send_headers(self):
@@ -65,7 +68,7 @@ class Response:
     def write(self, data: bytes):
         self.send_headers()
 
-        if type(data) != bytes:
+        if not isinstance(data, bytes):
             try:
                 data = data.encode()
             except AttributeError:
@@ -92,7 +95,7 @@ class Response:
         try:
             offset = os.lseek(fileno, 0, os.SEEK_CUR)
             if not self.response_length:
-                size = os.fstat(fileno)
+                size = os.fstat(fileno).st_size
                 self.response_length = size - offset
         except (OSError, io.UnsupportedOperation):
             return False
@@ -136,7 +139,7 @@ class Response:
             self.headers.append((token, val))
 
 
-    def build_environ(self, req) -> dict:
+    def build_environ(self, req: "Request") -> dict:
         split_path = (req.path.decode()).split('?')
 
         if len(split_path) != 2:
@@ -170,7 +173,7 @@ class Response:
                 environ[name] = value.strip()
 
         # write body
-        environ['wsgi.input'].write(self.body.getbuffer())
+        environ['wsgi.input'].write(req.body)
         environ['wsgi.input'].seek(0)
         return environ
 
@@ -179,49 +182,56 @@ class Response:
 
 class Request:
     __slots__ = ('body', 'bufsize', 'content_len', 'headers', 'method',
-                  'path', 'proto')
+                  'path', 'proto', 'logger')
     
-    max_header_size = 16384
+    MAX_HEADER_SIZE = 16384
 
     def __init__(self):
-        self.body = io.BytesIO()
-        self.bufsize = 8192
-        self.content_len = 0
-        self.headers = []
+        self.body: bytearray = bytearray()
+        self.bufsize: int = 8192
+        self.content_len: int = 0
+        self.headers: list[tuple[str, str]] = []
+        self.logger: logging.Logger = logging.getLogger(__name__)
         
 
     def build_request(self, sock: socket.socket):
         # begin reading request line and headers
-        buf = b""
-        while b"\r\n\r\n" not in buf:
-            if len(buf) > Request.max_header_size:
-                raise HeaderOverflow(Request.max_header_size)
+        buf = bytearray()
+        received = 0
+        while True:
+            if received > Request.MAX_HEADER_SIZE:
+                raise HeaderOverflow(Request.MAX_HEADER_SIZE)
             
-            chunk = sock.recv(self.bufsize)
-            if chunk == b'':
-                raise ClientDisconnect   
+            data = sock.recv(self.bufsize)
+            if data == b'':
+                raise ClientDisconnect
             
-            buf += chunk
-        headers_end = buf.find(b"\r\n\r\n")
+            buf.extend(data)
+            received += len(data)
+            
+            headers_end = buf.find(b"\r\n\r\n")
+            if headers_end != -1:
+                break
 
         self.parse_request(buf, headers_end)
 
         # begin body receival
         content_len = self.content_len
         body = self.body
+        
         # check if there's any useful data for body in buffer
         if len(buf[headers_end+4:]) > 0:
-            body.write(buf[headers_end+4:])
+            body.extend(buf[headers_end+4:])
 
-        while body.getbuffer().nbytes < content_len:
-            to_recv = content_len - body.getbuffer().nbytes
+        while len(body) < content_len:
+            to_recv = content_len - len(body)
             chunk = sock.recv(min(self.bufsize, to_recv))
 
             if chunk == b'':
                 raise ClientDisconnect
             
-            body.write(chunk)
-        
+            body.extend(chunk)
+
     
     def parse_request(self, buf: bytes, headers_end: int) -> int:
         line_end = buf.find(b"\r\n")
@@ -246,6 +256,10 @@ class Request:
 
         except ValueError:
             raise IncorrectHeadersFormat(buf[line_end+2:headers_end])
+        
+        
+    def notify(self):
+        self.logger.info("%s %s", self.method.decode(), self.path.decode())
         
 
 

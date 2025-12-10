@@ -44,7 +44,7 @@ def init_signals(pairs: list[tuple[int, typing.Callable]]):
 
 
 class Logger:
-    levels = {
+    levels_map = {
         "critical": logging.CRITICAL,
         "error": logging.ERROR,
         "warning": logging.WARNING,
@@ -54,7 +54,7 @@ class Logger:
 
 
     def __init__(self, level: typing.Literal['critical', 'error', 'warning', 'info', 'debug']):
-        self.level = level
+        self.level = self.levels_map[level]
 
     def init_logger(self):
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        logging.basicConfig(level=self.level, format='%(asctime)s | %(levelname)s | %(message)s')

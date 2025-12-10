@@ -43,6 +43,8 @@ class Server:
                 if e.errno == errno.EADDRINUSE:
                     self.logger.critical(f"Couldnt bind to adress {self.host}:{self.port}, attempt {att}/3")
                 time.sleep(2)
+            except Exception as e:
+                self.logger.critical("Unexpected error occured while trying to init sockets: %s", str(e))
 
         self.worker = self.worker(app=self.app, listeners=self.server_sockets)
         # log where we listen

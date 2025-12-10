@@ -1,9 +1,27 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Template test</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Post form</title>
 </head>
 <body>
-    <h1>{{ message }}</h1>
+    <h2>Submit data</h2>
+
+    <form action="post" method="POST">
+        <div>
+            <label for="title">Title:</label>
+            <!-- The 'name' attribute corresponds to keys in standard form submission -->
+            <input type="text" id="title" name="title" required>
+        </div>
+        <br>
+        <div>
+            <label for="desc">Description:</label>
+            <textarea id="desc" name="desc" rows="4" required></textarea>
+        </div>
+        <br>
+        <button type="submit">Send Data</button>
+    </form>
+
 </body>
 </html>

@@ -9,6 +9,39 @@ import importlib
 
 
 class Config:
+    """
+    Configuration class for WSGI server settings.
+    
+
+    Attributes:
+        app (typing.Callable): The WSGI application callable that will handle requests.
+        
+        bind (list[tuple[str, int]]): List of (host, port) tuples to bind the server to.
+            Currently only supports TCP.
+        
+        backlog (int): Maximum number of pending connections in the socket's listen queue.
+            Default: 2048
+        
+        workertype (typing.Literal['sync']): The type of worker processing model to use.
+            Options:
+                'sync' - Synchronous worker, processes one request at a time
+            
+            Default: 'sync'
+    
+            
+    Examples:
+        Basic config from your code:
+        
+        >>> config = Config()
+        >>> config.app = my_wsgi_app
+        >>> config.bind = [('0.0.0.0', 8000)]
+        >>> config.backlog = 1024
+
+    
+    See Also:
+        WSGI Specification: PEP 3333`
+    """
+
     def __init__(self):
         # server config options
         self.app: typing.Callable = None
@@ -17,7 +50,7 @@ class Config:
         self.workertype: typing.Literal['sync'] = 'sync'
 
         # misc
-        self.exceptions: list[tuple[str, str]] = []
+        self._exceptions: list[tuple[str, str]] = []
 
 
     def perform_validations(self):
@@ -31,7 +64,7 @@ class Config:
            'sync': 'server.workers.sync.SyncWorker',
         }
         if worker_class not in WORKERS_MAP:
-            self.exceptions.append(('workertype', "Incorrect worker_class name, using sync worker instead."))
+            self._exceptions.append(('workertype', "Incorrect workertype name, using sync worker instead."))
             self.workertype = WORKERS_MAP['sync']
         else:
             self.workertype = WORKERS_MAP[worker_class]
@@ -57,30 +90,28 @@ class Config:
                 host, port = addr.split(':')
                 _bind.append((host, int(port)))
             except ValueError:
-                self.exceptions.append(('bind', f'Couldnt resolve the address {addr}')) 
+                self._exceptions.append(('bind', f'Couldnt resolve the address {addr}')) 
         self.bind = _bind
 
 
 
-def init_config(debug: bool = False) -> Config:
-    if debug:
-        cfg = Config()
-        setattr(cfg, 'app', 'app/app_example.py:app')
-        setattr(cfg, 'bind', ['127.0.0.1:8000'])
-        cfg.perform_validations()
-        return cfg
+    def init_config(self, debug: bool = False):
+        if debug:
+            setattr(self, 'app', 'app/app_example.py:app')
+            setattr(self, 'bind', ['127.0.0.1:8000'])
+            self.perform_validations()
+            return self
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('app', type=str)
-    parser.add_argument('--bind', type=str, default=['127.0.0.1:8000'], nargs='+')
-    parser.add_argument('--workertype', type=str, default='sync')
+        parser = argparse.ArgumentParser()
+        parser.add_argument('app', type=str)
+        parser.add_argument('--bind', type=str, default=['127.0.0.1:8000'], nargs='+')
+        parser.add_argument('--workertype', type=str, default='sync')
 
-    args = parser.parse_args()
-    config = Config()
+        args = parser.parse_args()
 
-    for k, v in vars(args).items():
-        setattr(config, k, v)
+        for k, v in vars(args).items():
+            setattr(self, k, v)
 
-    config.perform_validations()
-    
-    return config
+        self.perform_validations()
+
+        return self

@@ -20,4 +20,4 @@ class IncorrectWriteArgument(ApplicationException):
 
 class FatalConfigException(Exception):
     def __init__(self, message: str):
-        super().__init__("Server couldnt start because some config options werent resolved: %s", message)
+        super().__init__(f"Server couldnt start because some config options werent resolved: {message}")

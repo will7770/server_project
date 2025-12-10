@@ -44,11 +44,9 @@ def test_raising_error():
 
 @app.route("/post", methods=['POST'])
 def post_example():
-    body = request.get_json()
-    print(body['title'], body['desc'])
-    r = request.environ
-    print(r)
-    return {'status': 'sent'}
+    title = request.form['title']
+    desc = request.form['desc']
+    return jsonify({'title': title, 'desc': desc})
 
 
 @app.route("/long", methods=['GET'])
@@ -59,7 +57,7 @@ def long_operation():
 
 @app.route("/index", methods=['GET'])
 def test_template():
-    return render_template('index.html', message="how's your day?")
+    return render_template('index.html')
 
 
 @app.route('/get_file', methods=['GET'])

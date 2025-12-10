@@ -4,6 +4,7 @@ import signal
 from ..utils import init_signals
 import logging
 import selectors
+import sys
 
 
 
@@ -16,18 +17,24 @@ class BaseWorker:
         self.alive = False
         self.logger = logging.getLogger(__name__)
         self.server_sock_timeout: int | float = 0.5 # time we make the selector wait for if there are no data in any descriptors
-        self.client_sock_timeout: int | float = 15 # how much we let the client sock hang for before closing it
+        self.client_sock_timeout: int | float = 5 # how much we let the client sock hang for before closing it
 
 
     def prepare_worker(self):
         init_signals([
-        (signal.SIGINT, self.sigint_handler)
+        (signal.SIGINT, self.sigint_handler),
+        (signal.SIGTERM, self.sigterm_handler),
         ])
 
 
     def sigint_handler(self, signum, frame):
-        self.logger.info("SIGINT received, shutting down")
+        self.logger.info("Gracefully shutting down the server. . .")
         self.alive = False
+
+
+    def sigterm_handler(self, signum, frame):
+        self.logger.info("Forcefully shutting down the server. . .")
+        sys.exit(1)
 
 
     def close(self):
