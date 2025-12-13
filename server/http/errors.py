@@ -18,3 +18,8 @@ class HeaderOverflow(RequestBuildingError):
     def __init__(self, size: int):
         self.size = size
         super().__init__(f"Header size limit exceeded ({size})")
+        
+        
+class RequestLineOverflow(RequestBuildingError):
+    def __init__(self, size: int):
+        super().__init__(f"Request line size limit exceeded ({size})")

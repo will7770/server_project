@@ -9,6 +9,7 @@ import re
 import mmap
 import os
 import logging
+from ..sock import SocketReader
 
 
 
@@ -22,9 +23,9 @@ HEADER_VALUE_RE = re.compile(r'[ \t\x21-\x7e\x80-\xff]*')
 
 class Response:
     __slots__ = ('sock', 'response_length', 'status', 'headers_sent',
-                 'headers', 'sent', 'body', 'logger')
+                 'headers', 'sent', 'body', 'logger', 'request')
 
-    def __init__(self, sock: socket.socket):
+    def __init__(self, sock: socket.socket, request: "Request"):
         self.sock: socket.socket = sock
         self.response_length: int = None
         self.status: str = None
@@ -33,6 +34,7 @@ class Response:
         self.sent: int = 0
         self.body: bytearray = None
         self.logger = logging.getLogger(__name__)
+        self.request: "Request" = request
 
 
     def send_headers(self):
@@ -40,16 +42,15 @@ class Response:
         if self.headers_sent:
             return
         
-        response = f"HTTP/1.1 {self.status}\r\n"
-        for token, val in self.headers:
-            response += f"{token}: {val}\r\n"
+        response = f"HTTP/1.1 {self.status}\r\n" + "\r\n".join([f"{name}: {val}" for name, val in self.headers]) + "\r\n\r\n"
+        response = memoryview(response.encode())
 
-        response += "\r\n"
-        self.sock.sendall(response.encode())
+        self.sock.sendall(response)
+        response.release()
         self.headers_sent = True
 
 
-    def start_response(self, status: int, response_headers: list[tuple[str, str]], exc_info = None) -> typing.Callable:
+    def start_response(self, status: str, response_headers: list[tuple[str, str]], exc_info = None) -> typing.Callable:
         if exc_info:
             try:
                 if self.headers_sent:
@@ -61,7 +62,6 @@ class Response:
         
         self.status = status
         self.process_headers(response_headers)
-        self.send_headers()
         return self.write
 
 
@@ -74,16 +74,18 @@ class Response:
             except AttributeError:
                 raise IncorrectWriteArgument
         
-        datalen = len(data)
-        to_send = datalen
+        response = memoryview(data)
+        to_send = response.nbytes
+        
         if self.response_length:
             if self.response_length <= self.sent:
                 return
             to_send = min(self.response_length-self.sent, to_send)
-            to_send = data[:to_send]
+            response = response[:to_send]
 
-        self.sent += len(to_send)
-        self.sock.sendall(to_send)
+        self.sent += response.nbytes
+        self.sock.sendall(response)
+        response.release()
 
 
     def write_file(self, file_wrapper):
@@ -120,6 +122,7 @@ class Response:
         else:
             for chunk in app_result:
                 self.write(chunk)
+                
         # some wsgi apps close their resources, return to make it possible
         return app_result
     
@@ -137,9 +140,13 @@ class Response:
                 self.response_length = int(val)
 
             self.headers.append((token, val))
+        
+        if not self.request.keepalive:
+            self.headers.append(('Connection', 'close'))    
 
 
-    def build_environ(self, req: "Request") -> dict:
+    def build_environ(self) -> dict:
+        req = self.request
         split_path = (req.path.decode()).split('?')
 
         if len(split_path) != 2:
@@ -150,7 +157,7 @@ class Response:
         environ = {
             'REQUEST_METHOD': req.method.decode(),
             'PATH_INFO': path,
-            'SERVER_PROTOCOL': req.proto.decode(),
+            'SERVER_PROTOCOL': req.version.decode(),
             'QUERY_STRING': query_string,
             'wsgi.version': (1, 0),
             'wsgi.url_scheme': 'http',
@@ -182,82 +189,98 @@ class Response:
 
 class Request:
     __slots__ = ('body', 'bufsize', 'content_len', 'headers', 'method',
-                  'path', 'proto', 'logger')
+                  'path', 'version', 'keepalive', 'logger', 'reader')
     
-    MAX_HEADER_SIZE = 16384
+    MAX_REQUEST_LINE = 8192
+    MAX_HEADER_SIZE = 32768
 
-    def __init__(self):
-        self.body: bytearray = bytearray()
+    def __init__(self, reader: "SocketReader"):
+        self.body: bytearray = None
         self.bufsize: int = 8192
         self.content_len: int = 0
         self.headers: list[tuple[str, str]] = []
+        self.method: bytes = None
+        self.path: bytes = None
+        self.version: bytes = None
+        self.keepalive: int = 1
         self.logger: logging.Logger = logging.getLogger(__name__)
+        self.reader: "SocketReader" = reader
         
 
-    def build_request(self, sock: socket.socket):
+    def build_request(self):
         # begin reading request line and headers
         buf = bytearray()
-        received = 0
+        self.read_into(buf)
+
+        putback = self.parse_request_line(buf)
+        if putback:
+            self.reader.put_back(putback)
+        
+        buf = bytearray()
         while True:
-            if received > Request.MAX_HEADER_SIZE:
-                raise HeaderOverflow(Request.MAX_HEADER_SIZE)
-            
-            data = sock.recv(self.bufsize)
-            if data == b'':
-                raise ClientDisconnect
-            
-            buf.extend(data)
-            received += len(data)
-            
+            self.read_into(buf)
             headers_end = buf.find(b"\r\n\r\n")
             if headers_end != -1:
                 break
 
-        self.parse_request(buf, headers_end)
+        putback = self.parse_headers(buf, headers_end)
+        del buf
+        self.reader.put_back(putback)
 
         # begin body receival
         content_len = self.content_len
-        body = self.body
+        self.body = bytearray()
         
-        # check if there's any useful data for body in buffer
-        if len(buf[headers_end+4:]) > 0:
-            body.extend(buf[headers_end+4:])
-
-        while len(body) < content_len:
-            to_recv = content_len - len(body)
-            chunk = sock.recv(min(self.bufsize, to_recv))
-
-            if chunk == b'':
-                raise ClientDisconnect
-            
-            body.extend(chunk)
+        while len(self.body) < content_len:
+            to_recv = content_len - len(self.body)
+            self.read_into(self.body, min(self.bufsize, to_recv))
 
     
-    def parse_request(self, buf: bytes, headers_end: int) -> int:
-        line_end = buf.find(b"\r\n")
-
+    def parse_headers(self, buf: bytearray, headers_end: int) -> int:
         try:
-            req_line = buf[:line_end].split(b" ", 2)
-        except ValueError:
-            raise MalformedRequestLineError(buf[:line_end])
-        
-        self.method, self.path, self.proto = req_line
-        self.headers = []
-
-        try:
-            raw_headers = buf[line_end+2:headers_end].split(b"\r\n")
+            raw_headers = buf[2:headers_end]
+            
+            if len(raw_headers) > self.MAX_HEADER_SIZE:
+                raise HeaderOverflow(self.MAX_HEADER_SIZE)
+            
+            raw_headers = raw_headers.split(b"\r\n")
             for pair in raw_headers:
                 k, v = (pair.decode()).split(": ", 1)
 
                 if k == 'Content-Length':
                     self.content_len = int(v)
+                elif k == 'Connection':
+                    if v == 'close':
+                        self.keepalive = 0
 
                 self.headers.append((k, v))
+            
+            return buf[headers_end+4:]
 
         except ValueError:
-            raise IncorrectHeadersFormat(buf[line_end+2:headers_end])
+            raise IncorrectHeadersFormat(buf[2:headers_end])
         
         
+    def parse_request_line(self, data: bytearray) -> int:
+        idx = data.find(b"\r\n")
+        try:
+            req_line = data[:idx]
+            
+            if len(req_line) > self.MAX_REQUEST_LINE:
+                raise RequestLineOverflow(self.MAX_REQUEST_LINE)
+            
+            putback = data[idx:]
+            self.method, self.path, self.version = req_line.split(b" ", 2)
+            return putback
+        except ValueError:
+            raise MalformedRequestLineError(req_line)
+        
+        
+    def read_into(self, buf: bytearray, amount: int = -1):
+        d = self.reader.read(amount)
+        buf.extend(d)
+    
+    
     def notify(self):
         self.logger.info("%s %s", self.method.decode(), self.path.decode())
         

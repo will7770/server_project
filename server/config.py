@@ -1,5 +1,4 @@
 import argparse
-from app.app_example import app
 from server.utils import find_application
 from .errors import FatalConfigException
 import typing
@@ -95,13 +94,7 @@ class Config:
 
 
 
-    def init_config(self, debug: bool = False):
-        if debug:
-            setattr(self, 'app', 'app/app_example.py:app')
-            setattr(self, 'bind', ['127.0.0.1:8000'])
-            self.perform_validations()
-            return self
-
+    def init_config(self):
         parser = argparse.ArgumentParser()
         parser.add_argument('app', type=str)
         parser.add_argument('--bind', type=str, default=['127.0.0.1:8000'], nargs='+')

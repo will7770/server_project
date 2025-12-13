@@ -15,14 +15,12 @@ def run(config: Config = None):
     try:
         if not config:
             cfg = Config()
-            cfg.init_config(debug=False)
+            cfg.init_config()
         else: 
             cfg = config
             cfg.perform_validations()
     except FatalConfigException:
         raise
-        # runner_logger.fatal("Some important config options werent set/were set incorrectly", exc_info=True)
-        # return
     
     if cfg._exceptions:
         print("Some config options werent correct and have been set to defaults:")
