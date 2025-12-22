@@ -16,7 +16,6 @@ class SyncWorker(BaseWorker):
         self.alive = True
 
         self.prepare_worker()
-        # register listeners
 
         while self.alive:
             ready = self.get_ready()

@@ -10,6 +10,7 @@ import mmap
 import os
 import logging
 from ..sock import SocketReader
+from .wrappers import FileWrapper, BodyWrapper
 
 
 
@@ -43,10 +44,9 @@ class Response:
             return
         
         response = f"HTTP/1.1 {self.status}\r\n" + "\r\n".join([f"{name}: {val}" for name, val in self.headers]) + "\r\n\r\n"
-        response = memoryview(response.encode())
+        response = response.encode()
 
         self.sock.sendall(response)
-        response.release()
         self.headers_sent = True
 
 
@@ -88,7 +88,7 @@ class Response:
         response.release()
 
 
-    def write_file(self, file_wrapper):
+    def write_file(self, file_wrapper: FileWrapper):
         if not hasattr(file_wrapper.filelike, 'fileno'):
             return False
         
@@ -161,7 +161,7 @@ class Response:
             'QUERY_STRING': query_string,
             'wsgi.version': (1, 0),
             'wsgi.url_scheme': 'http',
-            'wsgi.input': io.BytesIO(),
+            'wsgi.input': BodyWrapper(self.request.reader, self.request.content_len),
             'wsgi.errors': sys.stderr,
             'wsgi.multithread': False,
             'wsgi.multiprocess': False,
@@ -179,23 +179,19 @@ class Response:
                 name = 'HTTP_' + name
                 environ[name] = value.strip()
 
-        # write body
-        environ['wsgi.input'].write(req.body)
-        environ['wsgi.input'].seek(0)
         return environ
 
 
 
 
 class Request:
-    __slots__ = ('body', 'bufsize', 'content_len', 'headers', 'method',
+    __slots__ = ('bufsize', 'content_len', 'headers', 'method',
                   'path', 'version', 'keepalive', 'logger', 'reader')
     
     MAX_REQUEST_LINE = 8192
     MAX_HEADER_SIZE = 32768
 
-    def __init__(self, reader: "SocketReader"):
-        self.body: bytearray = None
+    def __init__(self, reader: SocketReader):
         self.bufsize: int = 8192
         self.content_len: int = 0
         self.headers: list[tuple[str, str]] = []
@@ -212,33 +208,22 @@ class Request:
         buf = bytearray()
         self.read_into(buf)
 
-        putback = self.parse_request_line(buf)
-        if putback:
-            self.reader.put_back(putback)
+        headers_start = self.parse_request_line(buf)
         
-        buf = bytearray()
-        while True:
+        headers_end = buf.find(b"\r\n\r\n")
+        while headers_end == -1:
             self.read_into(buf)
             headers_end = buf.find(b"\r\n\r\n")
             if headers_end != -1:
                 break
 
-        putback = self.parse_headers(buf, headers_end)
-        del buf
-        self.reader.put_back(putback)
-
-        # begin body receival
-        content_len = self.content_len
-        self.body = bytearray()
-        
-        while len(self.body) < content_len:
-            to_recv = content_len - len(self.body)
-            self.read_into(self.body, min(self.bufsize, to_recv))
+        self.parse_headers(buf, headers_start, headers_end)
+        self.reader.put_back(buf, start=headers_end+4)
 
     
-    def parse_headers(self, buf: bytearray, headers_end: int) -> int:
+    def parse_headers(self, buf: bytearray, headers_start: int, headers_end: int) -> int:
         try:
-            raw_headers = buf[2:headers_end]
+            raw_headers = buf[headers_start:headers_end]
             
             if len(raw_headers) > self.MAX_HEADER_SIZE:
                 raise HeaderOverflow(self.MAX_HEADER_SIZE)
@@ -254,11 +239,9 @@ class Request:
                         self.keepalive = 0
 
                 self.headers.append((k, v))
-            
-            return buf[headers_end+4:]
 
         except ValueError:
-            raise IncorrectHeadersFormat(buf[2:headers_end])
+            raise IncorrectHeadersFormat(raw_headers)
         
         
     def parse_request_line(self, data: bytearray) -> int:
@@ -269,40 +252,18 @@ class Request:
             if len(req_line) > self.MAX_REQUEST_LINE:
                 raise RequestLineOverflow(self.MAX_REQUEST_LINE)
             
-            putback = data[idx:]
             self.method, self.path, self.version = req_line.split(b" ", 2)
-            return putback
+            return idx+2
         except ValueError:
             raise MalformedRequestLineError(req_line)
         
         
     def read_into(self, buf: bytearray, amount: int = -1):
-        d = self.reader.read(amount)
-        buf.extend(d)
+        data = self.reader.read(amount)
+        if len(data) == 0:
+            raise ClientDisconnect
+        buf.extend(data)
     
     
     def notify(self):
         self.logger.info("%s %s", self.method.decode(), self.path.decode())
-        
-
-
-
-class FileWrapper:
-    def __init__(self, filelike: typing.BinaryIO, chunksize: int = 8192):
-        if not hasattr(filelike, 'read'):
-            raise ValueError('Argument passed into file_wrapper must be a file-like object')
-
-        self.filelike = filelike
-        self.chunk = chunksize
-        if hasattr(self.filelike, 'close'):
-            self.close = self.filelike.close
-
-
-    def __iter__(self):
-        return self
-    
-
-    def __next__(self):
-        data = self.filelike.read(self.chunk)
-        if not data:
-            raise StopIteration

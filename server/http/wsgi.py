@@ -11,6 +11,7 @@ import errno
 import time
 import selectors
 from ..config import Config
+import sys
 
 
 
@@ -35,22 +36,33 @@ class Server:
             return
 
         # deploy sockets, retry up to 3 times with a timeout
-        for att in range(3):
+        for att in range(1, 4):
             try:
                 self.server_sockets = create_sockets(self.bind, self.backlog)
                 break
             except OSError as e:
                 if e.errno == errno.EADDRINUSE:
-                    self.logger.critical(f"Couldnt bind to adress {self.host}:{self.port}, attempt {att}/3")
+                    self.logger.critical("Address %s:%s is in use, retrying. (Аttempt %i/3)", self.host, self.port, att)
+                elif e.errno == errno.EADDRNOTAVAIL:
+                    self.logger.critical("Address %s:%s is not available, retrying. (Аttempt %i/3)", self.host, self.port, att)
+                elif e.errno == errno.EACCES:
+                    self.logger.critical("No permission to open a socket at address %s:%s, retrying. (Аttempt %i/3)", self.host, self.port, att)
+                else:
+                    self.logger.critical("Unexpected OS error occured while starting socket at address %s:%s, retrying. (Аttempt %i/3) (Error: %s)", self.host, self.port, att, str(e))
                 time.sleep(2)
             except Exception as e:
-                self.logger.critical("Unexpected error occured while trying to init sockets: %s", str(e))
+                self.logger.critical("Unexpected error occured while trying to init sockets: %s (Аttempt %i/3)", str(e), att)
+                time.sleep(2)
+        else:
+            self.logger.critical("Sockets failed to deploy, finishing the process. . .")
+            self.finish(True)
 
-        self.worker = self.worker(app=self.app, listeners=self.server_sockets)
+        self.worker = self.worker(app=self.app, listeners=self.server_sockets, cfg=self.cfg)
         # log where we listen
         for sock in self.server_sockets:
             address, port = sock.getsockname()
             self.logger.info(f'Serving on http://{address}:{port}')
+        self.worker.run()
         try:
             self.worker.run()
         finally:
@@ -61,5 +73,9 @@ class Server:
         pass
 
 
-    def finish(self):
-        self.logger.info("Process finished.")
+    def finish(self, failure: bool = False):
+        if not failure:
+            self.logger.info("Process finished.")
+            sys.exit(0)
+        self.logger.info("Process finished due to an error.")
+        sys.exit(1)
