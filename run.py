@@ -1,8 +1,10 @@
 from server.http.wsgi import Server
 from server.config import Config
 from server.utils import Logger
-from server.errors import FatalConfigException
+from server.errors import FatalConfigException, ServerExit
 import logging
+import sys
+import traceback
 
 
 
@@ -27,7 +29,12 @@ def run(config: Config = None):
             logger.warning(f"Option name: {option}, Exception raised: {exception}\n")
 
     server = Server(cfg)
-    server.run()
+    try:
+        server.run()
+    except ServerExit as se:
+        if se.__cause__:
+            traceback.print_exception(type(se), se, se.__traceback__)
+        sys.exit()
 
   
 

@@ -8,6 +8,10 @@ class ClientDisconnect(ClientException):
     pass
 
 
+class ServerExit(Exception):
+    pass
+
+
 class InvalidAppReturnType(ApplicationException):
     def __init__(self):
         super().__init__("Application must return an iterable of bytestrings (b'')")

@@ -17,6 +17,7 @@ from .wrappers import FileWrapper, BodyWrapper
 
 # thanks gunicorn
 RFC9110_5_6_2_TOKEN_SPECIALS = r"!#$%&'*+-.^_`|~"
+RFC9110_5_5_INVALID_AND_DANGEROUS = re.compile(r"[\0\r\n]")
 TOKEN_RE = re.compile(r"[%s0-9a-zA-Z]+" % (re.escape(RFC9110_5_6_2_TOKEN_SPECIALS)))
 
 HEADER_VALUE_RE = re.compile(r'[ \t\x21-\x7e\x80-\xff]*')
@@ -145,9 +146,9 @@ class Response:
             self.headers.append(('Connection', 'close'))    
 
 
-    def build_environ(self) -> dict:
+    def build_environ(self, sockname: tuple[str, str], mount: str) -> dict:
         req = self.request
-        split_path = (req.path.decode()).split('?')
+        split_path = (req.path).split('?')
 
         if len(split_path) != 2:
             path, query_string = split_path[0], ''
@@ -155,10 +156,12 @@ class Response:
             path, query_string = split_path
 
         environ = {
-            'REQUEST_METHOD': req.method.decode(),
-            'PATH_INFO': path,
-            'SERVER_PROTOCOL': req.version.decode(),
+            'SCRIPT_NAME': mount,
+            'REQUEST_METHOD': req.method,
+            'PATH_INFO': path[len(mount):] if mount else path,
+            'SERVER_PROTOCOL': req.version,
             'QUERY_STRING': query_string,
+            'REMOTE_ADDR': self.sock.getsockname(),
             'wsgi.version': (1, 0),
             'wsgi.url_scheme': 'http',
             'wsgi.input': BodyWrapper(self.request.reader, self.request.content_len),
@@ -168,6 +171,7 @@ class Response:
             'wsgi.run_once': False,
             'wsgi.file_wrapper': FileWrapper
         }
+        environ['SERVER_NAME'], environ['SERVER_PORT'] = sockname
         # write headers to environ
         for header_pair in req.headers:
             name, value = header_pair
@@ -185,74 +189,133 @@ class Response:
 
 
 class Request:
-    __slots__ = ('bufsize', 'content_len', 'headers', 'method',
+    __slots__ = ('bufsize', 'content_len', 'host', 'headers', 'method',
                   'path', 'version', 'keepalive', 'logger', 'reader')
     
+    MAX_HEADER_AMOUNT = 128
     MAX_REQUEST_LINE = 8192
     MAX_HEADER_SIZE = 32768
+    MAX_SINGLE_HEADER = 8192
 
     def __init__(self, reader: SocketReader):
         self.bufsize: int = 8192
         self.content_len: int = 0
+        self.host: str = None
         self.headers: list[tuple[str, str]] = []
-        self.method: bytes = None
-        self.path: bytes = None
-        self.version: bytes = None
+        self.method: str = None
+        self.path: str = None
+        self.version: str = None
         self.keepalive: int = 1
         self.logger: logging.Logger = logging.getLogger(__name__)
         self.reader: "SocketReader" = reader
         
 
     def build_request(self):
-        # begin reading request line and headers
         buf = bytearray()
+        # fill initial buffer with whatever
         self.read_into(buf)
 
         headers_start = self.parse_request_line(buf)
-        
-        headers_end = buf.find(b"\r\n\r\n")
-        while headers_end == -1:
-            self.read_into(buf)
-            headers_end = buf.find(b"\r\n\r\n")
-            if headers_end != -1:
-                break
 
-        self.parse_headers(buf, headers_start, headers_end)
+        headers_end = self.parse_headers(buf, headers_start)
+        
         self.reader.put_back(buf, start=headers_end+4)
 
     
-    def parse_headers(self, buf: bytearray, headers_start: int, headers_end: int) -> int:
+    def parse_headers(self, buf: bytearray, headers_start: int) -> int:
+        # get headers end index
+        while True:
+            headers_end = buf.find(b"\r\n\r\n")
+            if headers_end-headers_start > self.MAX_HEADER_SIZE:
+                raise HeaderOverflow("Max headers size limit reached", self.MAX_HEADER_SIZE)
+            if headers_end >= 0:
+                break
+            self.read_into(buf)
+            
+        # begin headers parsing
         try:
             raw_headers = buf[headers_start:headers_end]
             
             if len(raw_headers) > self.MAX_HEADER_SIZE:
-                raise HeaderOverflow(self.MAX_HEADER_SIZE)
+                raise HeaderOverflow("Max headers size limit reached", self.MAX_HEADER_SIZE)
             
-            raw_headers = raw_headers.split(b"\r\n")
-            for pair in raw_headers:
-                k, v = (pair.decode()).split(": ", 1)
+            raw_headers = [header.decode() for header in raw_headers.split(b"\r\n")]
+            if len(raw_headers) > self.MAX_HEADER_AMOUNT:
+                raise HeaderOverflow("Max amount of headers reached", self.MAX_HEADER_AMOUNT)
+            
+            for header in raw_headers:
+                if header.find(":") <= 0:
+                    raise IncorrectHeader(header)
+                if len(header)+2 > self.MAX_SINGLE_HEADER:
+                    raise HeaderOverflow("Max size for single header reached", self.MAX_SINGLE_HEADER)
+                    
+                k, v = header.split(":", 1)
+
+                if k.rstrip(" \t") != k:
+                    raise IncorrectHeader(header)
+                if not TOKEN_RE.fullmatch(k):
+                    raise IncorrectHeader(header)
+                
+                v = v.strip(" \t")
+                if RFC9110_5_5_INVALID_AND_DANGEROUS.search(v):
+                    raise IncorrectHeader(header)
 
                 if k == 'Content-Length':
+                    if self.content_len:
+                        raise DuplicateHeader(k)
                     self.content_len = int(v)
+                elif k == 'Host':
+                    if self.host:
+                        raise DuplicateHeader(k)
+                    self.host = v
                 elif k == 'Connection':
                     if v == 'close':
                         self.keepalive = 0
 
                 self.headers.append((k, v))
-
-        except ValueError:
+            
+            return headers_end
+        except (ValueError, UnicodeDecodeError):
             raise IncorrectHeadersFormat(raw_headers)
         
         
-    def parse_request_line(self, data: bytearray) -> int:
-        idx = data.find(b"\r\n")
-        try:
-            req_line = data[:idx]
-            
-            if len(req_line) > self.MAX_REQUEST_LINE:
+    def parse_request_line(self, buf: bytearray) -> int:
+        while True:
+            idx = buf.find(b"\r\n")
+            if idx > self.MAX_REQUEST_LINE:
                 raise RequestLineOverflow(self.MAX_REQUEST_LINE)
             
-            self.method, self.path, self.version = req_line.split(b" ", 2)
+            if idx >= 0:
+                req_line = buf[:idx]
+                if len(req_line) > self.MAX_REQUEST_LINE:
+                    raise RequestLineOverflow(self.MAX_REQUEST_LINE)
+                break
+            self.read_into(buf)
+                
+        try:
+            req_line = req_line.decode()
+            self.method, self.path, self.version = req_line.split(" ", 2)
+            
+            # method checks
+            if not TOKEN_RE.fullmatch(self.method):
+                raise IncorrectMethodError(self.method)
+            if not 3 <= len(self.method) < 32:
+                raise IncorrectMethodError(self.method)
+            
+            # path
+            if len(self.path) == 0:
+                raise MalformedRequestLineError(req_line)
+            
+            # version
+            version_format = re.compile(r"HTTP/(\d).(\d)")
+            matched = version_format.fullmatch(self.version)
+            if matched is None:
+                raise MalformedRequestLineError(req_line)
+            
+            version = (int(matched.group(1)), int(matched.group(2)))
+            if not version <= (1, 1):
+                raise UnsupportedOrIncorrectHTTPVersion(self.version)
+            
             return idx+2
         except ValueError:
             raise MalformedRequestLineError(req_line)
@@ -266,4 +329,4 @@ class Request:
     
     
     def notify(self):
-        self.logger.info("%s %s", self.method.decode(), self.path.decode())
+        self.logger.info("%s %s", self.method, self.path)

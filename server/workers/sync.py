@@ -47,10 +47,10 @@ class SyncWorker(BaseWorker):
                 return []
     
     
-    def handle_connection(self, client: socket.socket, addr: str):
+    def handle_connection(self, server: socket.socket, client: socket.socket, addr: str):
         try:
             request = Request(reader=SocketReader(client))
-            self.handle_request(request, client, addr)
+            self.handle_request(server, request, client, addr)
         except OSError as e:
             if e.errno not in (errno.EPIPE, errno.ECONNRESET, errno.ENOTCONN, errno.ECONNABORTED):
                 self.logger.exception("Socket processing error: %s", str(e))
@@ -66,7 +66,7 @@ class SyncWorker(BaseWorker):
             client.close()
     
     
-    def handle_request(self, request: Request, client: socket.socket, addr: str):
+    def handle_request(self, server: socket.socket, request: Request, client: socket.socket, addr: str):
         try:
             response = Response(client, request)
         
@@ -75,8 +75,8 @@ class SyncWorker(BaseWorker):
             
             # force connection: close on sync worker
             request.keepalive = 0
-            
-            environ = response.build_environ()
+    
+            environ = response.build_environ(server.getsockname(), self.cfg.mount)
 
             app_result = response.handle_app(self.app, environ)
             
@@ -93,8 +93,9 @@ class SyncWorker(BaseWorker):
     def accept(self, server_sock: socket.socket):
         client_sock, addr = server_sock.accept()
         self.logger.debug("Received connection from %s", addr)
+        
         client_sock.settimeout(self.client_sock_timeout)
-        self.handle_connection(client_sock, addr)
+        self.handle_connection(server_sock, client_sock, addr)
 
 
     def close(self):

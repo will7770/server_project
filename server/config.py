@@ -48,6 +48,11 @@ class Config:
         client_timeout (int): How much time we give the client before closing the connection.
         
             Default: 5
+            
+            
+        mount (str): Influences SCRIPT_NAME environ variable, tells the app where its root is.
+        
+            Default: '' (root)
     
             
     Examples:
@@ -70,6 +75,7 @@ class Config:
         self.backlog: int = 2048
         self.workertype: typing.Literal['sync'] = 'sync'
         self.logging_level: typing.Literal['critical', 'error', 'warning', 'info', 'debug'] = 'info'
+        self.mount: str = ''
 
         # worker specific
         self.client_timeout: int = 5
@@ -128,6 +134,7 @@ class Config:
         parser.add_argument('--workertype', type=str, default='sync')
         parser.add_argument('--avoid_keepalive', action='store_false')
         parser.add_argument('--logging_level', type=str, choices=['critical', 'error', 'warning', 'info', 'debug'], default='info')
+        parser.add_argument('--mount', type=str, default="")
 
         args = parser.parse_args()
 

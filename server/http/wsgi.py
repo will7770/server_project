@@ -62,10 +62,13 @@ class Server:
         for sock in self.server_sockets:
             address, port = sock.getsockname()
             self.logger.info(f'Serving on http://{address}:{port}')
-        self.worker.run()
+            
         try:
             self.worker.run()
-        finally:
+        except Exception:
+            exc = sys.exception()
+            self.finish(failure=True, exc=exc)
+        else:
             self.finish()
 
 
@@ -73,9 +76,11 @@ class Server:
         pass
 
 
-    def finish(self, failure: bool = False):
+    def finish(self, failure: bool = False, exc: Exception = None):
         if not failure:
             self.logger.info("Process finished.")
-            sys.exit(0)
-        self.logger.info("Process finished due to an error.")
-        sys.exit(1)
+        else:
+            self.logger.info("Process finished due to an error.")
+            if exc:
+                raise ServerExit("An error occured during the server runtime") from exc
+        raise ServerExit()

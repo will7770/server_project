@@ -8,7 +8,7 @@ from ..errors import ClientDisconnect
 class FileWrapper:
     def __init__(self, filelike: typing.BinaryIO, chunksize: int = 8192):
         if not hasattr(filelike, 'read'):
-            raise ValueError('Argument passed into file_wrapper must be a file-like object')
+            raise ValueError('Argument must be a file-like object')
 
         self.filelike = filelike
         self.chunk = chunksize
@@ -47,47 +47,57 @@ class BodyWrapper:
             recv_limit = self.content_len
         else:
             recv_limit = min(self.content_len, length)
+        if recv_limit <= 0:
+            return bytearray()
         
         self._read_into(buf, recv_limit)
         self.content_len -= len(buf)
+
         return buf
         
     
-    def readline(self, size=None) -> bytes:
-        buf = bytearray()
-        recv_limit = min(self.content_len, 8192)
-        while b"\n" not in buf:
-            self._read_into(buf, recv_limit)
+    def readline(self, size = None) -> bytes:
+        if size == 0 or self.content_len == 0:
+            return b""
         
-        self.content_len -= len(buf)
-        
-        idx = buf.find(b"\n")
-        if idx == -1:
-            return bytes(buf)
-        
-        self.reader.put_back(buf, start=idx+1)
-        return bytes(buf[:idx+1])
-    
-    
-    def readlines(self, sizehint=None) -> list[bytes]:
-        if sizehint < -1:
-            raise TypeError("Sizehint arg cannot be less than -1")
-        if sizehint == 0:
-            return [b'']
-        
-        if sizehint == -1:
-            recv_limit = self.content_len
-        else:
-            recv_limit = min(self.content_len, sizehint)
+        size = self.content_len if size is None or size < 0 else min(self.content_len, size)
         
         buf = bytearray()
-        while len(buf) < recv_limit:
-            self._read_into(buf, recv_limit)
+        
+        while True:
+            idx = buf.find(b"\n", 0, size)
+            idx = idx + 1 if idx >= 0 else size if len(buf) >= size else 0
             
-        self.reader.put_back(buf, start=recv_limit)
-        buf = buf[:recv_limit]
+            if idx:
+                ret = buf[:idx]
+                if len(buf) > idx:
+                    self.reader.put_back(buf, start=idx)
+                
+                self.content_len -= len(ret)
+                return bytes(ret)
+            
+            self._read_into(buf, min(1024, size))
+    
+    
+    def readlines(self, sizehint=0) -> list[bytes]:
+        if self.content_len == 0:
+            return []
         
-        return buf.splitlines()
+        ret = []
+        received = 0
+        while True:
+            line = self.readline()
+            
+            if line == b'':
+                break
+            if (received + len(line)) >= sizehint and sizehint > 0:
+                ret.append(line)
+                break
+            
+            ret.append(line)
+            received += len(line)
+        
+        return ret
             
         
     def _read_into(self, buf: bytearray, amount: int = -1):
