@@ -41,8 +41,6 @@ class BodyWrapper:
         elif length == 0:
             return bytearray()
         
-        buf = bytearray()
-        
         if length == -1:
             recv_limit = self.content_len
         else:
@@ -50,10 +48,10 @@ class BodyWrapper:
         if recv_limit <= 0:
             return bytearray()
         
-        self._read_into(buf, recv_limit)
-        self.content_len -= len(buf)
+        ret = self.reader.read_exact(amount=recv_limit)
+        self.content_len -= len(ret)
 
-        return buf
+        return ret
         
     
     def readline(self, size = None) -> bytes:
@@ -71,12 +69,12 @@ class BodyWrapper:
             if idx:
                 ret = buf[:idx]
                 if len(buf) > idx:
-                    self.reader.put_back(buf, start=idx)
+                    self.reader.reverse(len(buf)-idx)
                 
                 self.content_len -= len(ret)
                 return bytes(ret)
             
-            self._read_into(buf, min(1024, size))
+            self.reader.read(min(1024, size))
     
     
     def readlines(self, sizehint=0) -> list[bytes]:

@@ -42,65 +42,94 @@ def create_sockets(addresses: list[tuple[str, str]], backlog: int):
 
 
 class SocketReader:
-    __slots__ = ('sock', 'buf', 'chunksize')
+    __slots__ = ('sock', 'buf', 'chunksize', 'rptr', 'wptr', 'max_buf_size')
     
     def __init__(self, sock: socket.socket):
-        self.sock = sock
-        self.buf = bytearray()
+        self.sock: socket.socket = sock
         self.chunksize: int = 8192
+        self.rptr: int = 0 # read pointer
+        self.wptr: int = 0 # write pointer
+        self.buf = bytearray(self.chunksize)
+        self.max_buf_size: int = 65536
 
     
-    def read(self, amount: int = -1) -> bytearray:
+    def advance(self, advance_to: int):
+        if advance_to <= self.wptr and advance_to > -1:
+            self.rptr = advance_to
+        else: raise BufferError("Cant advance past readable data or accept a negative value")
+    
+    
+    def find(self, bytestring: bytes):
+        """ Find and return the position while respecting the read and write pointers """
+        return self.buf.find(bytestring, self.rptr, self.wptr)
+    
+    
+    def read_until(self, until_index: int = -1, additionally_advance: int = 0) -> bytearray:
+        if until_index < -1:
+            raise TypeError('Index cannot be less than -1')
+        if until_index == 0:
+            return self.buf[self.rptr:self.rptr]
+
+        # Unspecified index
+        if until_index == -1:
+            ret = self.buf[self.rptr:self.wptr]
+            
+        # Specified index
+        elif until_index > -1:
+            size = min(self.chunksize, until_index)
+            while self.wptr < until_index:
+                howmuch = self.fill(size)
+                if howmuch == 0:
+                    break
+            ret = self.buf[self.rptr:until_index]
+        
+        self.advance(advance_to=until_index+additionally_advance)
+        return ret
+    
+
+    def read_exact(self, amount: int, additionally_advance: int = 0):
         if amount < -1:
-            raise TypeError('Amount cannot be less than -1')
+            raise TypeError("Cannot accept an amount less than -1")
         if amount == 0:
             return bytearray()
-
-        # No amount = get data once
+        
+        # Unspecified amount
         if amount == -1:
-            if not len(self.buf) > 0:   
-                self._read(self.chunksize) 
-            res = self.buf
-            self.buf = bytearray()
-            return res
+            ret = self.buf[self.rptr:self.wptr]
+        
+        # Specified amount
+        elif amount > -1:
+            size = min(self.chunksize, amount)
+            while self.wptr-self.rptr < amount:
+                howmuch = self.fill(size)
+                if howmuch == 0:
+                    break
+            ret = self.buf[self.rptr:self.rptr+amount]
 
-        # Buffer has all data we need
-        if len(self.buf) >= amount:
-            data = self.buf[:amount]
-            del self.buf[:amount]
-            return data
-        
-        # Not enough to satisfy the amount
-        size = min(self.chunksize, amount)
-        while len(self.buf) < amount:
-            received = self._read(size)
-            if received == 0:
-                data = self.buf
-                self.buf = bytearray()
-                return data
-        
-        data = self.buf[:amount]
-        del self.buf[:amount]
-        return data
+        self.advance(self.rptr+len(ret)+additionally_advance)
+        return ret
     
+    
+    def fill(self, size: int = -1) -> int:
+        size = self.chunksize if size == -1 else size
+        # check if we need to double the buffer size
+        buflen = len(self.buf)
+        if buflen-self.wptr <= size:
+            if self.max_buf_size > buflen*2:
+                self.buf.extend(b"\x00" * buflen)
+            else:
+                self.rebufferthebuffer()
 
-    def _read(self, size: int):
-        data = self.sock.recv(size)
-        if data == b'':
+        view = memoryview(self.buf)[self.wptr:]
+        received = self.sock.recv_into(view, size)
+        if received == 0:
             return 0
-        self.buf.extend(data)
-        return len(data)
-
-
-    def put_back(self, data: bytes | bytearray, start: int = 0, end: int = -1):
-        if start > end and end > -1 and start > 0:
-            raise ValueError("Start argument must be less the than end argument.")
         
-        view = memoryview(data)
-        if end == -1:
-            view = view[start:]
-        else:
-            view = view[start:end]
-            
-        self.buf[:0] = view
-        view.release()
+        self.wptr += received
+        return received
+    
+    
+    def rebufferthebuffer(self):
+        view = memoryview(self.buf)[self.rptr:self.wptr]
+        self.buf[:view.nbytes] = view
+        self.rptr, self.wptr = 0, view.nbytes

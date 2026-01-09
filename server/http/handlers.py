@@ -211,31 +211,28 @@ class Request:
         
 
     def build_request(self):
-        buf = bytearray()
         # fill initial buffer with whatever
-        self.read_into(buf)
+        self.reader.fill()
 
-        headers_start = self.parse_request_line(buf)
+        headers_start = self.parse_request_line()
 
-        headers_end = self.parse_headers(buf, headers_start)
-        
-        self.reader.put_back(buf, start=headers_end+4)
+        headers_end = self.parse_headers(headers_start)
 
     
-    def parse_headers(self, buf: bytearray, headers_start: int) -> int:
+    def parse_headers(self, headers_start: int) -> int:
         # get headers end index
         while True:
-            headers_end = buf.find(b"\r\n\r\n")
+            headers_end = self.reader.find(b'\r\n\r\n')
             if headers_end-headers_start > self.MAX_HEADER_SIZE:
                 raise HeaderOverflow("Max headers size limit reached", self.MAX_HEADER_SIZE)
             if headers_end >= 0:
                 break
-            self.read_into(buf)
+            if self.reader.fill() == 0:
+                raise ClientDisconnect
             
+        raw_headers = self.reader.read_until(until_index=headers_end, additionally_advance=4)
         # begin headers parsing
         try:
-            raw_headers = buf[headers_start:headers_end]
-            
             if len(raw_headers) > self.MAX_HEADER_SIZE:
                 raise HeaderOverflow("Max headers size limit reached", self.MAX_HEADER_SIZE)
             
@@ -279,19 +276,20 @@ class Request:
             raise IncorrectHeadersFormat(raw_headers)
         
         
-    def parse_request_line(self, buf: bytearray) -> int:
+    def parse_request_line(self) -> int:
         while True:
-            idx = buf.find(b"\r\n")
+            idx = self.reader.find(b'\r\n')
             if idx > self.MAX_REQUEST_LINE:
                 raise RequestLineOverflow(self.MAX_REQUEST_LINE)
             
             if idx >= 0:
-                req_line = buf[:idx]
+                req_line = self.reader.read_until(until_index=idx, additionally_advance=2)
                 if len(req_line) > self.MAX_REQUEST_LINE:
                     raise RequestLineOverflow(self.MAX_REQUEST_LINE)
                 break
-            self.read_into(buf)
-                
+            if self.reader.fill() == 0:
+                raise ClientDisconnect
+             
         try:
             req_line = req_line.decode()
             self.method, self.path, self.version = req_line.split(" ", 2)
@@ -319,13 +317,6 @@ class Request:
             return idx+2
         except ValueError:
             raise MalformedRequestLineError(req_line)
-        
-        
-    def read_into(self, buf: bytearray, amount: int = -1):
-        data = self.reader.read(amount)
-        if len(data) == 0:
-            raise ClientDisconnect
-        buf.extend(data)
     
     
     def notify(self):

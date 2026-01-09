@@ -16,7 +16,7 @@ def basic_app(environ, start_response):
     
 
 
-app = Flask(__name__, template_folder='app/templates')
+app = Flask(__name__, template_folder='examples/flask_example/templates')
 
 
 
@@ -62,11 +62,11 @@ def test_template():
 
 @app.route('/get_file', methods=['GET'])
 def test_files():
-    path = os.path.join(app.root_path, 'app/templates/index.html')
+    path = os.path.join(app.root_path, 'examples/flask_example/templates/index.html')
     return send_file(path)
 
 
 @app.route('/get_image', methods=['GET'])
 def test_image():
-    path = os.path.join(app.root_path, 'app/static/image.jpg')
+    path = os.path.join(app.root_path, 'examples/flask_example/static/image.jpg')
     return send_file(path)
