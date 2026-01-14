@@ -1,5 +1,5 @@
 import socket
-from .errors import ClientDisconnect
+from .errors import BufferLimitReached
 
 
 class BaseSocket:
@@ -26,7 +26,7 @@ class BaseSocket:
 class TCPsocket(BaseSocket):
     def init_socket(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 0)
+        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.setblocking(0)
 
@@ -42,14 +42,16 @@ def create_sockets(addresses: list[tuple[str, str]], backlog: int):
 
 
 class SocketReader:
-    __slots__ = ('sock', 'buf', 'chunksize', 'rptr', 'wptr', 'max_buf_size')
+    __slots__ = ('sock', 'buf', 'chunksize', 'buflen', 'compact_threshold', 'rptr', 'wptr', 'max_buf_size')
     
     def __init__(self, sock: socket.socket):
         self.sock: socket.socket = sock
         self.chunksize: int = 8192
+        self.compact_threshold: int = 8192
         self.rptr: int = 0 # read pointer
         self.wptr: int = 0 # write pointer
         self.buf = bytearray(self.chunksize)
+        self.buflen: int = self.chunksize
         self.max_buf_size: int = 65536
 
     
@@ -111,15 +113,14 @@ class SocketReader:
     
     
     def fill(self, size: int = -1) -> int:
-        size = self.chunksize if size == -1 else size
-        # check if we need to double the buffer size
-        buflen = len(self.buf)
-        if buflen-self.wptr <= size:
-            if self.max_buf_size > buflen*2:
-                self.buf.extend(b"\x00" * buflen)
-            else:
+        size = size if size != -1 and size <= self.chunksize else self.chunksize
+        # check if we need to compact/resize the buffer
+        try:
+            while self.buflen-self.wptr < size:
                 self.rebufferthebuffer()
-
+        except BufferLimitReached:
+            return 0 # Force raising of ClientDisconnect
+        
         view = memoryview(self.buf)[self.wptr:]
         received = self.sock.recv_into(view, size)
         if received == 0:
@@ -127,9 +128,18 @@ class SocketReader:
         
         self.wptr += received
         return received
-    
+
     
     def rebufferthebuffer(self):
-        view = memoryview(self.buf)[self.rptr:self.wptr]
-        self.buf[:view.nbytes] = view
-        self.rptr, self.wptr = 0, view.nbytes
+        # If read pointer >= effective compact range, we compact
+        if self.rptr >= self.compact_threshold:           
+            view = memoryview(self.buf)[self.rptr:self.wptr]
+            self.buf[:view.nbytes] = view
+            self.rptr, self.wptr = 0, view.nbytes
+        
+        # If the buffer is full from top to bottom or compacting is not worth it, we double
+        else:
+            if self.wptr == self.max_buf_size or self.buflen*2 > self.max_buf_size:
+                raise BufferLimitReached
+            self.buf.extend(bytearray(self.buflen*2))
+            self.buflen *= 2

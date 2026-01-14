@@ -189,7 +189,7 @@ class Response:
 
 
 class Request:
-    __slots__ = ('bufsize', 'content_len', 'host', 'headers', 'method',
+    __slots__ = ('from_addr', 'bufsize', 'content_len', 'host', 'headers', 'method',
                   'path', 'version', 'keepalive', 'logger', 'reader')
     
     MAX_HEADER_AMOUNT = 128
@@ -197,7 +197,8 @@ class Request:
     MAX_HEADER_SIZE = 32768
     MAX_SINGLE_HEADER = 8192
 
-    def __init__(self, reader: SocketReader):
+    def __init__(self, reader: SocketReader, from_addr: str):
+        self.from_addr: str = from_addr
         self.bufsize: int = 8192
         self.content_len: int = 0
         self.host: str = None
@@ -207,7 +208,7 @@ class Request:
         self.version: str = None
         self.keepalive: int = 1
         self.logger: logging.Logger = logging.getLogger(__name__)
-        self.reader: "SocketReader" = reader
+        self.reader: SocketReader = reader
         
 
     def build_request(self):
@@ -231,6 +232,10 @@ class Request:
                 raise ClientDisconnect
             
         raw_headers = self.reader.read_until(until_index=headers_end, additionally_advance=4)
+        if len(raw_headers) < headers_end-self.reader.rptr:
+            self.logger.warning('Buffer returned incomplete data for address %s, disconnecting.', str(self.from_addr))
+            raise ClientDisconnect
+        
         # begin headers parsing
         try:
             if len(raw_headers) > self.MAX_HEADER_SIZE:
@@ -290,6 +295,10 @@ class Request:
             if self.reader.fill() == 0:
                 raise ClientDisconnect
              
+        if len(req_line) < idx-self.reader.rptr:
+            self.logger.warning('Buffer returned incomplete data for address %s, disconnecting.', str(self.from_addr))
+            raise ClientDisconnect
+        
         try:
             req_line = req_line.decode()
             self.method, self.path, self.version = req_line.split(" ", 2)

@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=70.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "server_project"
+requires-python = ">=3.13"
+readme = "README.md"
+dynamic = ["version"]
+
+[project.scripts]
+start-server = "server.run:run"

@@ -1,22 +1,11 @@
 from flask import Flask, request, jsonify, Response, render_template, send_file
 import time
 import os
-
-
-
-
-def basic_app(environ, start_response):
-    headers = [('X-custom-header', 'its custom!'),
-               ('X-powered-by', 'Deouserver')]
-    
-    status = '200 OK'
-    start_response(status, headers)
-
-    return [b"Hello world"]
+from server import Config, run
     
 
 
-app = Flask(__name__, template_folder='examples/flask_example/templates')
+app = Flask(__name__, template_folder='examples/flask_example/templates', static_folder='examples/flask_example/static')
 
 
 
@@ -62,11 +51,16 @@ def test_template():
 
 @app.route('/get_file', methods=['GET'])
 def test_files():
-    path = os.path.join(app.root_path, 'examples/flask_example/templates/index.html')
+    path = os.path.join(app.template_folder, 'index.html')
     return send_file(path)
 
 
 @app.route('/get_image', methods=['GET'])
 def test_image():
-    path = os.path.join(app.root_path, 'examples/flask_example/static/image.jpg')
+    path = os.path.join(app.static_folder, 'image.jpg')
     return send_file(path)
+
+
+# Example of running the server outside CLI
+cfg = Config(app=app, logging_level='debug')
+run(config=cfg)

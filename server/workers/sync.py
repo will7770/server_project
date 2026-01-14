@@ -49,7 +49,7 @@ class SyncWorker(BaseWorker):
     
     def handle_connection(self, server: socket.socket, client: socket.socket, addr: str):
         try:
-            request = Request(reader=SocketReader(client))
+            request = Request(reader=SocketReader(client), from_addr=client.getsockname())
             self.handle_request(server, request, client, addr)
         except OSError as e:
             if e.errno not in (errno.EPIPE, errno.ECONNRESET, errno.ENOTCONN, errno.ECONNABORTED):

@@ -9,6 +9,11 @@ import traceback
 
 
 def run(config: Config = None):
+    """Main entry point of the server.
+
+    Args:
+        config (Config, optional): Accepts an instance of Config class, must be present when running outside CLI.
+    """
     try:
         if not config:
             cfg = Config()

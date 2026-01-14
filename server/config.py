@@ -35,7 +35,7 @@ class Config:
             
             
         logging_level (typing.Literal['critical', 'error', 'warning', 'info', 'debug']): Level of logging the logger will use.
-        Matches the default python logging levels.
+            Matches the default python logging levels.
         
             Default: 'info'
             
@@ -68,18 +68,25 @@ class Config:
         WSGI Specification: PEP 3333
     """
 
-    def __init__(self):
+    def __init__(self, app: typing.Callable = None,
+                 bind: list[tuple[str, int]] = None,
+                 backlog: int = None,
+                 workertype: typing.Literal['sync'] = None,
+                 logging_level: typing.Literal['critical', 'error', 'warning', 'info', 'debug'] = None,
+                 mount: str = None,
+                 client_timeout: int = None,
+                 avoid_keepalive: bool = None):
         # server config options
-        self.app: typing.Callable = None
-        self.bind: list[tuple[str, int]] = []
-        self.backlog: int = 2048
-        self.workertype: typing.Literal['sync'] = 'sync'
-        self.logging_level: typing.Literal['critical', 'error', 'warning', 'info', 'debug'] = 'info'
-        self.mount: str = ''
+        self.app: typing.Callable = app
+        self.bind: list[tuple[str, int]] = ['127.0.0.1:8000'] or bind
+        self.backlog: int = 2048 or backlog
+        self.workertype: typing.Literal['sync'] = 'sync' or workertype
+        self.logging_level: typing.Literal['critical', 'error', 'warning', 'info', 'debug'] = 'info' or logging_level
+        self.mount: str = '' or mount
 
         # worker specific
-        self.client_timeout: int = 5
-        self.avoid_keepalive: bool = False
+        self.client_timeout: int = 5 or client_timeout
+        self.avoid_keepalive: bool = False or avoid_keepalive
         
         # internal
         self._exceptions: list[tuple[str, str]] = []

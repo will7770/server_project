@@ -8,6 +8,10 @@ class ClientDisconnect(ClientException):
     pass
 
 
+class BufferLimitReached(Exception):
+    pass
+
+
 class ServerExit(Exception):
     pass
 

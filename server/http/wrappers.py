@@ -74,7 +74,7 @@ class BodyWrapper:
                 self.content_len -= len(ret)
                 return bytes(ret)
             
-            self.reader.read(min(1024, size))
+            self.reader.read_exact(min(1024, size))
     
     
     def readlines(self, sizehint=0) -> list[bytes]:
@@ -97,9 +97,3 @@ class BodyWrapper:
         
         return ret
             
-        
-    def _read_into(self, buf: bytearray, amount: int = -1):
-        data = self.reader.read(amount)
-        if len(data) == 0:
-            raise ClientDisconnect
-        buf.extend(data)

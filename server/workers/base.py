@@ -6,11 +6,12 @@ import logging
 import selectors
 import sys
 from ..config import Config
+from abc import ABC, abstractmethod
 
 
 
 
-class BaseWorker:
+class BaseWorker(ABC):
     def __init__(self, app: typing.Callable, listeners: list[socket.socket], cfg: Config = Config()):
         self.app = app
         self.listeners = listeners
@@ -39,17 +40,22 @@ class BaseWorker:
         sys.exit(1)
 
 
+    @abstractmethod
     def close(self):
-        raise NotImplementedError()
+        pass
 
-
+    @abstractmethod
     def run(self):
-        raise NotImplementedError()
+        pass
 
-
+    @abstractmethod
     def handle_request(self):
-        raise NotImplementedError()
+        pass
     
-
+    @abstractmethod
+    def handle_connection(self):
+        pass
+    
+    @abstractmethod
     def accept(self):
-        raise NotImplementedError()
+        pass
