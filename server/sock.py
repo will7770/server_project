@@ -56,9 +56,11 @@ class SocketReader:
 
     
     def advance(self, advance_to: int):
-        if advance_to <= self.wptr and advance_to > -1:
+        if advance_to < -1:
+            raise BufferError("Cant advance pointer to a negative index")
+        if advance_to <= self.wptr:
             self.rptr = advance_to
-        else: raise BufferError("Cant advance past readable data or accept a negative value")
+        else: raise BufferError(f"Cant advance to index {advance_to} as it exceeds readable data ({self.wptr})")
     
     
     def find(self, bytestring: bytes):
@@ -75,17 +77,25 @@ class SocketReader:
         # Unspecified index
         if until_index == -1:
             ret = self.buf[self.rptr:self.wptr]
+            self.advance(advance_to=self.wptr)
+            return ret
             
         # Specified index
+        # I figured theres a risk of desync between the index we're reading until and actual data
+        # Because when we compact the buffer, that index gets moved. So for convenience, just track amount.
         elif until_index > -1:
-            size = min(self.chunksize, until_index)
-            while self.wptr < until_index:
+            amount_to_read = until_index-self.rptr
+            size = min(self.chunksize, amount_to_read)
+            
+            while self.wptr-self.rptr < amount_to_read:
                 howmuch = self.fill(size)
                 if howmuch == 0:
                     break
-            ret = self.buf[self.rptr:until_index]
+
+            read = min((self.wptr-self.rptr), amount_to_read)
+            ret = self.buf[self.rptr:self.rptr+read]
         
-        self.advance(advance_to=until_index+additionally_advance)
+        self.advance(advance_to=self.rptr+len(ret)+additionally_advance)
         return ret
     
 
@@ -102,11 +112,14 @@ class SocketReader:
         # Specified amount
         elif amount > -1:
             size = min(self.chunksize, amount)
+            
             while self.wptr-self.rptr < amount:
                 howmuch = self.fill(size)
                 if howmuch == 0:
                     break
-            ret = self.buf[self.rptr:self.rptr+amount]
+
+            read = min((self.wptr-self.rptr), amount)
+            ret = self.buf[self.rptr:self.rptr+read]
 
         self.advance(self.rptr+len(ret)+additionally_advance)
         return ret
@@ -119,11 +132,12 @@ class SocketReader:
             while self.buflen-self.wptr < size:
                 self.rebufferthebuffer()
         except BufferLimitReached:
-            return 0 # Force raising of ClientDisconnect
+            return 0 # Signal to stop trying to extend
         
         view = memoryview(self.buf)[self.wptr:]
         received = self.sock.recv_into(view, size)
         if received == 0:
+            # TODO: maybe its a good idea to disconnect here?
             return 0
         
         self.wptr += received
@@ -141,5 +155,5 @@ class SocketReader:
         else:
             if self.wptr == self.max_buf_size or self.buflen*2 > self.max_buf_size:
                 raise BufferLimitReached
-            self.buf.extend(bytearray(self.buflen*2))
+            self.buf.extend(bytearray(self.buflen))
             self.buflen *= 2

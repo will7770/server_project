@@ -3,3 +3,4 @@ TODO.md
 *__pycache__
 *.venv
 server_project.egg-info
+.vscode/*

@@ -11,6 +11,7 @@ import os
 import logging
 from ..sock import SocketReader
 from .wrappers import FileWrapper, BodyWrapper
+#import urllib3
 
 
 
@@ -70,10 +71,7 @@ class Response:
         self.send_headers()
 
         if not isinstance(data, bytes):
-            try:
-                data = data.encode()
-            except AttributeError:
-                raise IncorrectWriteArgument
+            raise IncorrectWriteArgument
         
         response = memoryview(data)
         to_send = response.nbytes
@@ -95,6 +93,7 @@ class Response:
         
         fileno = file_wrapper.filelike.fileno()
 
+        # check the offset and calculate response len. if not set already
         try:
             offset = os.lseek(fileno, 0, os.SEEK_CUR)
             if not self.response_length:
@@ -108,6 +107,7 @@ class Response:
         if self.response_length > 0:
             self.sock.sendfile(file_wrapper.filelike, offset, self.response_length)
 
+        # return the pointer to its previous place like nothing happened
         os.lseek(fileno, offset, os.SEEK_SET)
 
         return True
@@ -161,7 +161,7 @@ class Response:
             'PATH_INFO': path[len(mount):] if mount else path,
             'SERVER_PROTOCOL': req.version,
             'QUERY_STRING': query_string,
-            'REMOTE_ADDR': self.sock.getsockname(),
+            'REMOTE_ADDR': self.sock.getpeername(),
             'wsgi.version': (1, 0),
             'wsgi.url_scheme': 'http',
             'wsgi.input': BodyWrapper(self.request.reader, self.request.content_len),
@@ -294,7 +294,7 @@ class Request:
                 break
             if self.reader.fill() == 0:
                 raise ClientDisconnect
-             
+            
         if len(req_line) < idx-self.reader.rptr:
             self.logger.warning('Buffer returned incomplete data for address %s, disconnecting.', str(self.from_addr))
             raise ClientDisconnect

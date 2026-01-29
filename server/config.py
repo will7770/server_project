@@ -78,11 +78,11 @@ class Config:
                  avoid_keepalive: bool = None):
         # server config options
         self.app: typing.Callable = app
-        self.bind: list[tuple[str, int]] = ['127.0.0.1:8000'] or bind
-        self.backlog: int = 2048 or backlog
-        self.workertype: typing.Literal['sync'] = 'sync' or workertype
-        self.logging_level: typing.Literal['critical', 'error', 'warning', 'info', 'debug'] = 'info' or logging_level
-        self.mount: str = '' or mount
+        self.bind: list[tuple[str, int]] = bind or ['127.0.0.1:8000']
+        self.backlog: int = backlog or 2048
+        self.workertype: typing.Literal['sync'] = workertype or 'sync' 
+        self.logging_level: typing.Literal['critical', 'error', 'warning', 'info', 'debug'] = logging_level or 'info' 
+        self.mount: str = mount or ''
 
         # worker specific
         self.client_timeout: int = 5 or client_timeout
