@@ -1,6 +1,7 @@
 import typing
 from ..sock import SocketReader
 from ..errors import ClientDisconnect
+from collections.abc import Buffer
 
 
 
@@ -51,18 +52,50 @@ class BodyWrapper:
         
 
         left_to_read = recv_limit
-        ret = bytearray()
+        ret = []
         
         while left_to_read:
             data = self.reader.read_exact(amount=left_to_read)
             if not data:
                 raise ClientDisconnect
+            ret.append(data)
             left_to_read -= len(data)
             
+        ret = bytearray().join(ret)
         self.content_len -= len(ret)
 
         return ret
         
+    
+    def readinto(self, buf: Buffer, length: int = -1) -> int:
+        if length < -1:
+            raise TypeError("Length arg cant be less than -1")
+        elif length == 0:
+            return 0
+        
+        if length == -1:
+            recv_limit = self.content_len
+        else:
+            recv_limit = min(self.content_len, length)
+        if recv_limit <= 0:
+            return 0
+        
+        left_to_read = recv_limit
+        pos = 0
+        
+        while left_to_read:
+            data = self.reader.read_exact(left_to_read)
+            if not data:
+                raise ClientDisconnect
+            n = len(data)
+            buf[pos:pos+n] = data
+
+            pos += n
+            left_to_read -= n
+            self.content_len -= n
+            
+        return recv_limit-left_to_read
+    
     
     def readline(self, size = None) -> bytes:
         if size == 0 or self.content_len == 0:

@@ -52,7 +52,7 @@ class SocketReader:
         self.wptr: int = 0 # write pointer
         self.buf = bytearray(self.chunksize)
         self.buflen: int = self.chunksize
-        self.max_buf_size: int = 65536
+        self.max_buf_size: int = 1024*64
 
     
     def advance(self, advance_to: int):
