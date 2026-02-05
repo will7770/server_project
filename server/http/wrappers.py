@@ -52,48 +52,67 @@ class BodyWrapper:
         
 
         left_to_read = recv_limit
-        ret = []
+        # TODO: its a bad idea to prealloc big amounts
+        ret = bytearray(min(left_to_read, self.reader.max_buf_size))
+        ptr = 0
+        # Minimize every socket call by maximizing chunk length. Save the original reader's read limit to assign it back later.
+        prev_limit = self.reader.chunksize
         
-        while left_to_read:
-            data = self.reader.read_exact(amount=left_to_read)
-            if not data:
-                raise ClientDisconnect
-            ret.append(data)
-            left_to_read -= len(data)
+        try:
+            self.reader.chunksize = self.reader.max_buf_size
+            while left_to_read:
+                with memoryview(ret)[ptr:] as view:
+                    howmuch = self.reader.read_into(usrbuf=view, amount=left_to_read)
+                    
+                if not howmuch:
+                    raise ClientDisconnect
+                
+                left_to_read -= howmuch
+                ptr += howmuch
+                
+                # Check if the buffer needs to get extended. We double it if we have more than len(buf)*2 left to read
+                # Or we extend it by whatever amount we have left to read if it has less
+                space_left = len(ret)-ptr
+                if left_to_read > space_left:
+                    if left_to_read > len(ret)*2:
+                        ret.extend(bytearray(len(ret)))
+                    else:
+                        ret.extend(bytearray(left_to_read))
+        finally:
+            self.reader.chunksize = prev_limit
             
-        ret = bytearray().join(ret)
         self.content_len -= len(ret)
-
         return ret
         
-    
-    def readinto(self, buf: Buffer, length: int = -1) -> int:
-        if length < -1:
-            raise TypeError("Length arg cant be less than -1")
-        elif length == 0:
+
+    def readinto(self, buf: Buffer) -> int:
+        length = len(buf)
+
+        if length == 0:
             return 0
         
-        if length == -1:
-            recv_limit = self.content_len
-        else:
-            recv_limit = min(self.content_len, length)
+        recv_limit = min(self.content_len, length)
         if recv_limit <= 0:
             return 0
         
         left_to_read = recv_limit
         pos = 0
+        prev_limit = self.reader.chunksize
         
-        while left_to_read:
-            data = self.reader.read_exact(left_to_read)
-            if not data:
-                raise ClientDisconnect
-            n = len(data)
-            buf[pos:pos+n] = data
+        try:
+            self.reader.chunksize = min(left_to_read, self.reader.max_buf_size)
+            while left_to_read:
+                with memoryview(buf)[pos:] as view:
+                    howmuch = self.reader.read_into(view, left_to_read)
+                if not howmuch:
+                    raise ClientDisconnect
 
-            pos += n
-            left_to_read -= n
-            self.content_len -= n
-            
+                pos += howmuch
+                left_to_read -= howmuch
+                self.content_len -= howmuch
+        finally:
+            self.reader.chunksize = prev_limit
+        
         return recv_limit-left_to_read
     
     

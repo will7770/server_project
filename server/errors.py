@@ -12,6 +12,10 @@ class BufferLimitReached(Exception):
     pass
 
 
+class BufferCantExtend(Exception):
+    pass
+
+
 class ServerExit(Exception):
     pass
 

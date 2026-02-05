@@ -1,5 +1,6 @@
 import socket
-from .errors import BufferLimitReached
+from .errors import BufferLimitReached, BufferCantExtend
+from collections.abc import Buffer
 
 
 class BaseSocket:
@@ -125,21 +126,52 @@ class SocketReader:
         return ret
     
     
+    def read_into(self, usrbuf: Buffer, amount: int = -1) -> int:
+        if amount < -1:
+            raise TypeError("Cannot accept an amount less than -1")     
+        if amount == 0:
+            return 0
+        
+        
+        if amount == -1:
+            usrbuf[:] = self.buf[self.rptr:self.wptr]
+            return self.wptr-self.rptr
+        
+        # Avoid writing over memoryview's length
+        if hasattr(usrbuf, 'nbytes'):
+            amount = min(usrbuf.nbytes, amount)
+            
+        while self.wptr-self.rptr < amount:
+            howmuch = self.fill(amount)
+            if howmuch == 0:
+                break
+            
+        read = min((self.wptr-self.rptr), amount)
+        usrbuf[:read] = self.buf[self.rptr:self.rptr+read]
+        
+        self.advance(self.rptr+read)
+        return read
+    
+    
     def fill(self, size: int = -1) -> int:
         size = size if size != -1 and size <= self.chunksize else self.chunksize
         # check if we need to compact/resize the buffer
-        try:
-            while self.buflen-self.wptr < size:
+        while self.buflen-self.wptr < size:
+            try:
                 self.rebufferthebuffer()
-        except BufferLimitReached:
-            return 0 # Signal to stop trying to extend
+            except BufferLimitReached:
+                return 0 # Signal to stop trying to extend
+            except BufferCantExtend:
+                break # Keep trying to fill as some space may still be present
+        
         
         view = memoryview(self.buf)[self.wptr:]
-        received = self.sock.recv_into(view, size)
+        received = self.sock.recv_into(view, min(view.nbytes, size))
         if received == 0:
             # TODO: maybe its a good idea to disconnect here?
             return 0
         
+        view.release()
         self.wptr += received
         return received
 
@@ -153,7 +185,10 @@ class SocketReader:
         
         # If the buffer is full from top to bottom or compacting is not worth it, we double
         else:
-            if self.wptr == self.max_buf_size or self.buflen*2 > self.max_buf_size:
+            if self.wptr == self.max_buf_size:
                 raise BufferLimitReached
+            elif self.buflen*2 > self.max_buf_size:
+                raise BufferCantExtend
+            
             self.buf.extend(bytearray(self.buflen))
             self.buflen *= 2
