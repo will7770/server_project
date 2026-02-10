@@ -42,13 +42,13 @@ class Server:
                 break
             except OSError as e:
                 if e.errno == errno.EADDRINUSE:
-                    self.logger.critical("Address %s:%s is in use, retrying. (Аttempt %i/3)", self.host, self.port, att)
+                    self.logger.critical("Address %s:%s is in use, retrying. (Аttempt %i/3)", self.bind[0], self.bind[1], att)
                 elif e.errno == errno.EADDRNOTAVAIL:
-                    self.logger.critical("Address %s:%s is not available, retrying. (Аttempt %i/3)", self.host, self.port, att)
+                    self.logger.critical("Address %s:%s is not available, retrying. (Аttempt %i/3)", self.bind[0], self.bind[1], att)
                 elif e.errno == errno.EACCES:
-                    self.logger.critical("No permission to open a socket at address %s:%s, retrying. (Аttempt %i/3)", self.host, self.port, att)
+                    self.logger.critical("No permission to open a socket at address %s:%s, retrying. (Аttempt %i/3)", self.bind[0], self.bind[1], att)
                 else:
-                    self.logger.critical("Unexpected OS error occured while starting socket at address %s:%s, retrying. (Аttempt %i/3) (Error: %s)", self.host, self.port, att, str(e))
+                    self.logger.critical("Unexpected OS error occured while starting socket at address %s:%s, retrying. (Аttempt %i/3) (Error: %s)", self.bind[0], self.bind[1], att, str(e))
                 time.sleep(2)
             except Exception as e:
                 self.logger.critical("Unexpected error occured while trying to init sockets: %s (Аttempt %i/3)", str(e), att)
@@ -65,8 +65,7 @@ class Server:
             
         try:
             self.worker.run()
-        except Exception:
-            exc = sys.exception()
+        except Exception as exc:
             self.finish(failure=True, exc=exc)
         else:
             self.finish()

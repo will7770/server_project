@@ -6,7 +6,7 @@ from .errors import *
 from ..errors import *
 import datetime
 import re
-import mmap
+from ..utils import reraise
 import os
 import logging
 from ..sock import SocketReader
@@ -56,9 +56,9 @@ class Response:
         if exc_info:
             try:
                 if self.headers_sent:
-                    raise exc_info[1].with_traceback(exc_info[2])
+                    reraise(exc_info[0], exc_info[1], exc_info[2])
             finally:
-                exc_info = None
+                del exc_info
         elif self.headers_sent:
             raise AssertionError("Response had already been started")
         
@@ -111,21 +111,6 @@ class Response:
         os.lseek(fileno, offset, os.SEEK_SET)
 
         return True
-
-
-    def handle_app(self, app: typing.Callable, environ: dict):
-        app_result = app(environ, self.start_response)
-
-        if isinstance(app_result, FileWrapper):
-            if not self.write_file(app_result):
-                for chunk in app_result: self.write(chunk)
-
-        else:
-            for chunk in app_result:
-                self.write(chunk)
-                
-        # some wsgi apps close their resources, return to make it possible
-        return app_result
     
 
     def process_headers(self, headers: list[tuple[str, str]]):

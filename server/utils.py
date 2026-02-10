@@ -43,6 +43,21 @@ def init_signals(pairs: list[tuple[int, typing.Callable]]):
 
 
 
+def reraise(type_, value=None, traceback=None):
+    try:
+        if value is None:
+            value = type_()
+            
+        if value.__traceback__ is not traceback:
+            raise value.with_traceback(traceback)
+        
+        raise value
+    
+    finally:
+        del value, traceback
+
+
+
 class Logger:
     levels_map = {
         "critical": logging.CRITICAL,

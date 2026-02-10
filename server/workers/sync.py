@@ -62,6 +62,8 @@ class SyncWorker(BaseWorker):
                 self.logger.debug('Broken pipe')
             elif e.errno == errno.ECONNABORTED:
                 self.logger.debug('Connection terminated by client')
+        except Exception:
+            self.logger.exception("Internal server error has occured")
         finally:
             client.close()
     
@@ -69,7 +71,8 @@ class SyncWorker(BaseWorker):
     def handle_request(self, server: socket.socket, request: Request, client: socket.socket, addr: str):
         try:
             response = Response(client, request)
-        
+            app_result = None
+            
             request.build_request()
             request.notify()
             
@@ -78,16 +81,33 @@ class SyncWorker(BaseWorker):
     
             environ = response.build_environ(server.getsockname(), self.cfg.mount)
 
-            app_result = response.handle_app(self.app, environ)
-            
-            # release resources
-            if hasattr(app_result, 'close'):
-                app_result.close()
+            app_result = self.handle_app(response, self.app, environ)
 
         except TimeoutError:
             self.logger.debug("Client %s timed out", addr)
         except (ClientDisconnect, ConnectionResetError):
             self.logger.debug("Client %s disconnected", addr)
+            
+        finally:
+            # release resources
+            if app_result:
+                if hasattr(app_result, 'close'):
+                    app_result.close()
+            
+            
+    def handle_app(self, response: Response, app: typing.Callable, environ: dict):
+        app_result = app(environ, response.start_response)
+
+        if isinstance(app_result, environ['wsgi.file_wrapper']):
+            if not response.write_file(app_result):
+                for chunk in app_result: response.write(chunk)
+
+        else:
+            for chunk in app_result:
+                response.write(chunk)
+                
+        # some wsgi apps close their resources, return to make it possible
+        return app_result
 
 
     def accept(self, server_sock: socket.socket):

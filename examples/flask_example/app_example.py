@@ -6,6 +6,7 @@ from server import Config, run
 
 
 app = Flask(__name__, template_folder='examples/flask_example/templates', static_folder='examples/flask_example/static')
+app.debug = True
 
 
 
@@ -33,7 +34,7 @@ def test_raising_error():
 
 @app.route("/post", methods=['POST'])
 def post_example():
-    title = request.form['title']
+    title = request.form['titl']
     desc = request.form['desc']
     return jsonify({'title': title, 'desc': desc})
 
