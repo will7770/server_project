@@ -39,7 +39,7 @@ def post_example():
     return jsonify({'title': title, 'desc': desc})
 
 
-@app.route("/stream", methods=['POST'])
+@app.route("/receive_stream", methods=['POST'])
 def stream():
     # bad example of my ChunkedBodyWrapper getting used.
     full_data = b""
@@ -52,6 +52,16 @@ def stream():
     return {
         "received": str(full_data),
     }
+
+
+@app.route("/stream", methods=['GET'])
+def transmit_stream():
+    def generate_chunks():
+        with open(app.static_folder+'/image.jpg', 'rb') as fd:
+            while chunk := fd.read(1024*16):
+                yield chunk
+                
+    return Response(generate_chunks(), mimetype='application/octet-stream')
 
 
 @app.route("/long", methods=['GET'])

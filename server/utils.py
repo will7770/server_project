@@ -55,6 +55,13 @@ def reraise(type_, value=None, traceback=None):
     
     finally:
         del value, traceback
+        
+        
+        
+def is_hop_by_hop(header: str, hbh_collection: typing.Collection) -> bool:
+    if header in hbh_collection:
+        return True
+    return False
 
 
 

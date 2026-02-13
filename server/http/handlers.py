@@ -6,7 +6,7 @@ from .errors import *
 from ..errors import *
 import datetime
 import re
-from ..utils import reraise
+from ..utils import reraise, is_hop_by_hop
 import os
 import logging
 from ..sock import SocketReader
@@ -20,14 +20,16 @@ from typing import Literal
 # thanks gunicorn
 RFC9110_5_6_2_TOKEN_SPECIALS = r"!#$%&'*+-.^_`|~"
 RFC9110_5_5_INVALID_AND_DANGEROUS = re.compile(r"[\0\r\n]")
+
 TOKEN_RE = re.compile(r"[%s0-9a-zA-Z]+" % (re.escape(RFC9110_5_6_2_TOKEN_SPECIALS)))
 VERSION_FORMAT = re.compile(r"HTTP/(\d).(\d)")
 HEADER_VALUE_RE = re.compile(r'[ \t\x21-\x7e\x80-\xff]*')
 
+HOP_BY_HOP_HEADERS = frozenset({"CONNECTION", "KEEP-ALIVE", "PROXY-AUTHENTICATE", "PROXY-AUTHORIZATION", "TE","TRAILERS", "TRANSFER-ENCODING", "UPGRADE"})
 
 class Response:
     __slots__ = ('sock', 'response_length', 'status', 'headers_sent',
-                 'headers', 'sent', 'body', 'logger', 'request')
+                 'headers', 'sent', 'logger', 'request')
 
     def __init__(self, sock: socket.socket, request: "Request"):
         self.sock: socket.socket = sock
@@ -36,16 +38,31 @@ class Response:
         self.headers_sent: bool = False
         self.headers: list[tuple[str, str]] = []
         self.sent: int = 0
-        self.body: bytearray = None
         self.logger = logging.getLogger(__name__)
         self.request: "Request" = request
 
 
+    @property
+    def use_chunked(self) -> bool:
+        if self.response_length:
+            return False
+        elif self.request.method == 'HEAD':
+            return False
+        elif self.status in (204, 304):
+            return False
+        elif self.request.version != 'HTTP/1.1':
+            return False
+        return True
+        
+    
     def send_headers(self):
         # prepare response
         if self.headers_sent:
             return
         
+        if self.use_chunked:
+            self.headers.append(("Transfer-Encoding", "chunked"))
+            
         response = f"HTTP/1.1 {self.status}\r\n" + "\r\n".join([f"{name}: {val}" for name, val in self.headers]) + "\r\n\r\n"
         response = response.encode()
 
@@ -82,9 +99,18 @@ class Response:
                 return
             to_send = min(self.response_length-self.sent, to_send)
             response = response[:to_send]
-
+        
+        # avoid concantenation, instead send chunk header right away
+        elif self.use_chunked:
+            header = f"{to_send:X}\r\n"
+            self.sock.sendall(header.encode())
+            
         self.sent += response.nbytes
         self.sock.sendall(response)
+        
+        if self.use_chunked:
+            self.sock.sendall(b"\r\n")
+            
         response.release()
 
 
@@ -116,6 +142,9 @@ class Response:
 
     def process_headers(self, headers: list[tuple[str, str]]):
         for token, val in headers:
+            if is_hop_by_hop(token.upper(), HOP_BY_HOP_HEADERS):
+                continue
+            
             if type(token) != str or not TOKEN_RE.fullmatch(token):
                 raise IncorrectHeadersFormat(token)
             
@@ -163,9 +192,16 @@ class Response:
             name, value = header_pair
             name = name.replace('-', '_')
 
-            if name == 'Content_Type' or name == 'Content_Length':
+            if name == 'Content_Type':
                 environ[name.upper()] = value.strip()
+            elif name == 'Content_Length':
+                # empty content_length if chunked encoding is being received
+                environ[name.upper()] = value.strip() if not self.request.chunked_encoding else 0
             else:
+                # skip hbh headers
+                if is_hop_by_hop(name.upper(), HOP_BY_HOP_HEADERS):
+                    continue
+                
                 name = 'HTTP_' + name
                 environ[name] = value.strip()
 
@@ -177,6 +213,13 @@ class Response:
             return ChunkedBodyWrapper(self.request.reader)
         else:
             return BodyWrapper(self.request.reader, self.request.content_len)
+        
+        
+    def close(self):
+        if not self.headers_sent:
+            self.send_headers()
+        if self.use_chunked:
+            self.sock.sendall(b"0\r\n\r\n")
 
 
 
@@ -318,11 +361,11 @@ class Request:
                 raise MalformedRequestLineError(req_line)
             
             # version
-            matched = VERSION_FORMAT.fullmatch(self.version)
-            if matched is None:
+            version_match = VERSION_FORMAT.fullmatch(self.version)
+            if version_match is None:
                 raise MalformedRequestLineError(req_line)
             
-            version = (int(matched.group(1)), int(matched.group(2)))
+            version = (int(version_match.group(1)), int(version_match.group(2)))
             if not version <= (1, 1):
                 raise UnsupportedOrIncorrectHTTPVersion(self.version)
             

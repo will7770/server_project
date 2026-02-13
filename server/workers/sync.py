@@ -93,6 +93,7 @@ class SyncWorker(BaseWorker):
             if app_result:
                 if hasattr(app_result, 'close'):
                     app_result.close()
+            response.close()
             
             
     def handle_app(self, response: Response, app: typing.Callable, environ: dict):
