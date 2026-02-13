@@ -32,6 +32,10 @@ def run(config: Config = None):
         for pair in cfg._exceptions:
             option, exception = pair
             logger.warning(f"Option name: {option}, Exception raised: {exception}\n")
+            
+    if cfg.logging_level == 'debug':
+        logger.debug("Config options:")
+        logger.debug(cfg.list_config_to_str())
 
     server = Server(cfg)
     try:

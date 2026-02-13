@@ -92,10 +92,12 @@ class Config:
         self._exceptions: list[tuple[str, str]] = []
 
 
+
     def perform_validations(self):
         self.verify_app(self.app)
         self.verify_worker(self.workertype)
         self.verify_bind_addresses(self.bind) # first it accepts raw addresses passed by argparse, like 127.0.0.1:8000, only then assigns tuples to self.bind
+
 
 
     def verify_worker(self, worker_class: str):
@@ -115,12 +117,14 @@ class Config:
         self.workertype = worker_instance
 
 
+
     def verify_app(self, path: str):
         try:
             self.app = find_application(path)
         except Exception as e:
             raise FatalConfigException(str(e))
         
+
 
     def verify_bind_addresses(self, bind_to: list[str]):
         _bind = []
@@ -151,3 +155,18 @@ class Config:
         self.perform_validations()
 
         return self
+    
+    
+    
+    def list_config_to_str(self) -> str:
+        options = []
+        for attr, value in self.__dict__.items():
+            if callable(value):
+                continue
+            
+            if attr.startswith('_'):
+                continue
+            
+            options.append((attr, value))
+            
+        return "\n".join(f"{k}: {v}" for k, v in options)

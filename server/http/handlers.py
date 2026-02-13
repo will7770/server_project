@@ -10,7 +10,8 @@ from ..utils import reraise
 import os
 import logging
 from ..sock import SocketReader
-from .wrappers import FileWrapper, BodyWrapper
+from .wrappers import FileWrapper, BodyWrapper, ChunkedBodyWrapper
+from typing import Literal
 #import urllib3
 
 
@@ -20,7 +21,7 @@ from .wrappers import FileWrapper, BodyWrapper
 RFC9110_5_6_2_TOKEN_SPECIALS = r"!#$%&'*+-.^_`|~"
 RFC9110_5_5_INVALID_AND_DANGEROUS = re.compile(r"[\0\r\n]")
 TOKEN_RE = re.compile(r"[%s0-9a-zA-Z]+" % (re.escape(RFC9110_5_6_2_TOKEN_SPECIALS)))
-
+VERSION_FORMAT = re.compile(r"HTTP/(\d).(\d)")
 HEADER_VALUE_RE = re.compile(r'[ \t\x21-\x7e\x80-\xff]*')
 
 
@@ -149,7 +150,7 @@ class Response:
             'REMOTE_ADDR': self.sock.getpeername(),
             'wsgi.version': (1, 0),
             'wsgi.url_scheme': 'http',
-            'wsgi.input': BodyWrapper(self.request.reader, self.request.content_len),
+            'wsgi.input': self.set_body_wrapper(),
             'wsgi.errors': sys.stderr,
             'wsgi.multithread': False,
             'wsgi.multiprocess': False,
@@ -169,13 +170,20 @@ class Response:
                 environ[name] = value.strip()
 
         return environ
+    
+    
+    def set_body_wrapper(self) -> ChunkedBodyWrapper | BodyWrapper:
+        if self.request.chunked_encoding:
+            return ChunkedBodyWrapper(self.request.reader)
+        else:
+            return BodyWrapper(self.request.reader, self.request.content_len)
 
 
 
 
 class Request:
     __slots__ = ('from_addr', 'bufsize', 'content_len', 'host', 'headers', 'method',
-                  'path', 'version', 'keepalive', 'logger', 'reader')
+                  'path', 'version', 'keepalive', 'logger', 'reader', 'chunked_encoding')
     
     MAX_HEADER_AMOUNT = 128
     MAX_REQUEST_LINE = 8192
@@ -192,16 +200,13 @@ class Request:
         self.path: str = None
         self.version: str = None
         self.keepalive: int = 1
+        self.chunked_encoding: bool = False
         self.logger: logging.Logger = logging.getLogger(__name__)
         self.reader: SocketReader = reader
         
 
     def build_request(self):
-        # fill initial buffer with whatever
-        self.reader.fill()
-
         headers_start = self.parse_request_line()
-
         headers_end = self.parse_headers(headers_start)
 
     
@@ -215,9 +220,10 @@ class Request:
                 break
             if self.reader.fill() == 0:
                 raise ClientDisconnect
-            
-        raw_headers = self.reader.read_until(until_index=headers_end, additionally_advance=4)
-        if len(raw_headers) < headers_end-self.reader.rptr:
+        
+        try:
+            raw_headers = self.reader.read_until(until_index=headers_end, additionally_advance=4)
+        except IncompleteBufferResponse:
             self.logger.warning('Buffer returned incomplete data for address %s, disconnecting.', str(self.from_addr))
             raise ClientDisconnect
         
@@ -238,15 +244,22 @@ class Request:
                     
                 k, v = header.split(":", 1)
 
+                # ignore headers with underscores
+                if '_' in k:
+                    continue
+                
+                # header checks
                 if k.rstrip(" \t") != k:
                     raise IncorrectHeader(header)
                 if not TOKEN_RE.fullmatch(k):
                     raise IncorrectHeader(header)
                 
+                # header value checks
                 v = v.strip(" \t")
                 if RFC9110_5_5_INVALID_AND_DANGEROUS.search(v):
                     raise IncorrectHeader(header)
 
+                # TODO: nullify those on every keepalive request
                 if k == 'Content-Length':
                     if self.content_len:
                         raise DuplicateHeader(k)
@@ -258,6 +271,12 @@ class Request:
                 elif k == 'Connection':
                     if v == 'close':
                         self.keepalive = 0
+                elif k == 'Transfer-Encoding':
+                    encodings = v.split(',')
+                    # if theres more than 1 encoding or the encoding isnt chunked, assume we cant do anything for the request
+                    if len(encodings) > 1 or encodings[0] != 'chunked':
+                        raise UnsupportedEncoding(encodings)
+                    self.chunked_encoding = True
 
                 self.headers.append((k, v))
             
@@ -299,8 +318,7 @@ class Request:
                 raise MalformedRequestLineError(req_line)
             
             # version
-            version_format = re.compile(r"HTTP/(\d).(\d)")
-            matched = version_format.fullmatch(self.version)
+            matched = VERSION_FORMAT.fullmatch(self.version)
             if matched is None:
                 raise MalformedRequestLineError(req_line)
             

@@ -1,5 +1,5 @@
 import socket
-from .errors import BufferLimitReached, BufferCantExtend
+from .errors import BufferLimitReached, BufferCantExtend, IncompleteBufferResponse
 from collections.abc import Buffer
 
 
@@ -97,6 +97,9 @@ class SocketReader:
             ret = self.buf[self.rptr:self.rptr+read]
         
         self.advance(advance_to=self.rptr+len(ret)+additionally_advance)
+        if len(ret) < amount_to_read:
+            raise IncompleteBufferResponse
+        
         return ret
     
 
@@ -104,6 +107,7 @@ class SocketReader:
         if amount < -1:
             raise TypeError("Cannot accept an amount less than -1")
         if amount == 0:
+            self.advance(self.rptr+additionally_advance)
             return bytearray()
         
         # Unspecified amount
@@ -112,16 +116,28 @@ class SocketReader:
         
         # Specified amount
         elif amount > -1:
+            left_to_read = amount
+            ret = bytearray()
             size = min(self.chunksize, amount)
             
-            while self.wptr-self.rptr < amount:
-                howmuch = self.fill(size)
-                if howmuch == 0:
+            # fill internal buffer to the exact amount or raise an error
+            while left_to_read:
+                while self.wptr-self.rptr < amount:
+                    howmuch = self.fill(size)
+                    if howmuch == 0:
+                        break
+
+                read = min((self.wptr-self.rptr), amount)
+                if read == 0:
                     break
+                left_to_read -= read
+                
+                chunk = self.buf[self.rptr:self.rptr+read]
+                ret.extend(chunk)
 
-            read = min((self.wptr-self.rptr), amount)
-            ret = self.buf[self.rptr:self.rptr+read]
-
+        if len(ret) < amount:
+            raise IncompleteBufferResponse
+        
         self.advance(self.rptr+len(ret)+additionally_advance)
         return ret
     

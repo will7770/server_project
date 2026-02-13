@@ -11,8 +11,8 @@ class FileWrapper:
         if not hasattr(filelike, 'read'):
             raise ValueError('Argument must be a file-like object')
 
-        self.filelike = filelike
-        self.chunk = chunksize
+        self.filelike: typing.BinaryIO = filelike
+        self.chunk: int = chunksize
         if hasattr(self.filelike, 'close'):
             self.close = self.filelike.close
 
@@ -32,8 +32,8 @@ class BodyWrapper:
     __slots__ = ('reader', 'content_len')
     
     def __init__(self, reader: SocketReader, content_len: int = None):
-        self.reader = reader
-        self.content_len = content_len
+        self.reader: SocketReader = reader
+        self.content_len: int = content_len
         
         
     def read(self, length: int = -1) -> bytearray:
@@ -114,7 +114,7 @@ class BodyWrapper:
             self.reader.chunksize = prev_limit
         
         return recv_limit-left_to_read
-    
+
     
     def readline(self, size = None) -> bytes:
         if size == 0 or self.content_len == 0:
@@ -155,3 +155,65 @@ class BodyWrapper:
         
         return ret
             
+            
+            
+class ChunkedBodyWrapper:
+    __slots__ = ('reader', 'should_close', 'buf')
+    
+    def __init__(self, reader: SocketReader):
+        self.reader: SocketReader = reader
+        self.should_close: bool = False
+        self.buf = bytearray()
+        
+    
+    def _get_parsed_chunk(self) -> bytes:
+        amount_to_read = b''
+        data = bytearray()
+
+        # find the amount we need to read in hex
+        while True:
+            hex_delim_idx = self.reader.find(b'\r\n')
+            
+            if hex_delim_idx > 0:
+                # considering we eat everything from the previous request/chunk, we assume
+                # delim idx - read pointer = length of bytes we need to parse to get the amount
+                amount_to_read = self.reader.read_until(hex_delim_idx, additionally_advance=2)
+                amount_to_read = int(amount_to_read, 16)
+                
+                if amount_to_read == 0:
+                    self.should_close = True
+                break
+            
+            self.reader.fill()
+            
+        # get the amount
+        if self.should_close:
+            # just eat the delimeter
+            self.reader.read_exact(0, additionally_advance=2)
+            return 0
+            
+        data = self.reader.read_exact(amount_to_read, additionally_advance=2)
+        return data
+            
+    
+    def read(self, length: int = -1):
+        if length < -1:
+            raise TypeError("Length arg cant be less than -1")
+        elif length == 0:
+            return bytearray()
+            
+        read = len(self.buf)
+        
+        while not self.should_close and (length == -1 or read < length):
+            chunk = self._get_parsed_chunk()
+            if not chunk:
+                break
+            
+            read += len(chunk)
+            self.buf.extend(chunk)
+        
+        if length > -1:
+            ret, crumbs = self.buf[:length], self.buf[length:]
+            self.buf = crumbs
+            return ret
+        return self.buf

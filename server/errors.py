@@ -16,6 +16,11 @@ class BufferCantExtend(Exception):
     pass
 
 
+class IncompleteBufferResponse(Exception):
+    def __init__(self):
+        super().__init__("Buffer method returned an incomplete response")
+
+
 class ServerExit(Exception):
     pass
 

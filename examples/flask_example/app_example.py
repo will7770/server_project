@@ -34,9 +34,24 @@ def test_raising_error():
 
 @app.route("/post", methods=['POST'])
 def post_example():
-    title = request.form['titl']
+    title = request.form['title']
     desc = request.form['desc']
     return jsonify({'title': title, 'desc': desc})
+
+
+@app.route("/stream", methods=['POST'])
+def stream():
+    # bad example of my ChunkedBodyWrapper getting used.
+    full_data = b""
+    while True:
+        chunk = request.environ['wsgi.input'].read(1024)
+        if not chunk:
+            break
+        full_data += chunk
+
+    return {
+        "received": str(full_data),
+    }
 
 
 @app.route("/long", methods=['GET'])
@@ -63,5 +78,5 @@ def test_image():
 
 
 # Example of running the server outside CLI
-cfg = Config(app=app, logging_level='debug')
-run(config=cfg)
+# cfg = Config(app=app, logging_level='debug')
+# run(config=cfg)
