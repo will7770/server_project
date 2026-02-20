@@ -5,6 +5,7 @@ from pathlib import Path
 import signal
 import typing
 import time
+from datetime import datetime, timezone
 
 
 
@@ -62,6 +63,15 @@ def is_hop_by_hop(header: str, hbh_collection: typing.Collection) -> bool:
     if header in hbh_collection:
         return True
     return False
+
+
+
+# spooky mutable type as an argument. why not
+def get_cached_http_date(_cached_time=[datetime.now(timezone.utc)]):
+    old_time = _cached_time[0]
+    if abs(old_time.timestamp() - time.time()) > 1.0:
+        old_time = datetime.now(timezone.utc)
+    return old_time
 
 
 

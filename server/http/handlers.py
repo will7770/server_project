@@ -4,15 +4,16 @@ import sys
 import typing
 from .errors import *
 from ..errors import *
-import datetime
+from datetime import datetime, timezone
 import re
-from ..utils import reraise, is_hop_by_hop
+from ..utils import reraise, is_hop_by_hop, get_cached_http_date
 import os
 import logging
 from ..sock import SocketReader
 from .wrappers import FileWrapper, BodyWrapper, ChunkedBodyWrapper
 from typing import Literal
-#import urllib3
+from ..config import Config
+from urllib.parse import unquote
 
 
 
@@ -27,19 +28,24 @@ HEADER_VALUE_RE = re.compile(r'[ \t\x21-\x7e\x80-\xff]*')
 
 HOP_BY_HOP_HEADERS = frozenset({"CONNECTION", "KEEP-ALIVE", "PROXY-AUTHENTICATE", "PROXY-AUTHORIZATION", "TE","TRAILERS", "TRANSFER-ENCODING", "UPGRADE"})
 
+
+
+
 class Response:
     __slots__ = ('sock', 'response_length', 'status', 'headers_sent',
-                 'headers', 'sent', 'logger', 'request')
+                 'headers', 'kill_keepalive', 'sent', 'logger', 'request', 'cfg')
 
-    def __init__(self, sock: socket.socket, request: "Request"):
+    def __init__(self, sock: socket.socket, request: "Request", cfg: Config):
         self.sock: socket.socket = sock
         self.response_length: int = None
         self.status: str = None
         self.headers_sent: bool = False
         self.headers: list[tuple[str, str]] = []
+        self.kill_keepalive: bool = False
         self.sent: int = 0
         self.logger = logging.getLogger(__name__)
         self.request: "Request" = request
+        self.cfg: Config = cfg
 
 
     @property
@@ -55,14 +61,22 @@ class Response:
         return True
         
     
+    @property
+    def should_keep_alive(self) -> bool:
+        if self.kill_keepalive or self.cfg.avoid_keepalive:
+            return False 
+        elif not self.request.keepalive:
+            return False
+        elif not (self.use_chunked or self.response_length is not None):
+            return False
+        return True
+        
+    
     def send_headers(self):
         # prepare response
         if self.headers_sent:
             return
         
-        if self.use_chunked:
-            self.headers.append(("Transfer-Encoding", "chunked"))
-            
         response = f"HTTP/1.1 {self.status}\r\n" + "\r\n".join([f"{name}: {val}" for name, val in self.headers]) + "\r\n\r\n"
         response = response.encode()
 
@@ -157,8 +171,14 @@ class Response:
 
             self.headers.append((token, val))
         
-        if not self.request.keepalive:
-            self.headers.append(('Connection', 'close'))    
+        # append server headers
+        if not self.should_keep_alive:
+            self.headers.append(('Connection', 'close'))
+        if self.use_chunked:
+            self.headers.append(("Transfer-Encoding", "chunked"))
+            
+        self.headers.append(( "Date", get_cached_http_date().strftime('%a, %d %b %Y %H:%M:%S GMT') ))
+        self.headers.append(("Server", self.cfg.servername))
 
 
     def build_environ(self, sockname: tuple[str, str], mount: str) -> dict:
@@ -170,10 +190,13 @@ class Response:
         else:
             path, query_string = split_path
 
+        # relative path to mount
+        path = path[len(mount):] if mount else path
+        
         environ = {
             'SCRIPT_NAME': mount,
             'REQUEST_METHOD': req.method,
-            'PATH_INFO': path[len(mount):] if mount else path,
+            'PATH_INFO': unquote(path),
             'SERVER_PROTOCOL': req.version,
             'QUERY_STRING': query_string,
             'REMOTE_ADDR': self.sock.getpeername(),
@@ -226,14 +249,14 @@ class Response:
 
 class Request:
     __slots__ = ('from_addr', 'bufsize', 'content_len', 'host', 'headers', 'method',
-                  'path', 'version', 'keepalive', 'logger', 'reader', 'chunked_encoding')
+                  'path', 'version', 'keepalive', 'logger', 'reader', 'cfg', 'chunked_encoding')
     
     MAX_HEADER_AMOUNT = 128
     MAX_REQUEST_LINE = 8192
     MAX_HEADER_SIZE = 32768
     MAX_SINGLE_HEADER = 8192
 
-    def __init__(self, reader: SocketReader, from_addr: str):
+    def __init__(self, reader: SocketReader, from_addr: str, cfg: Config):
         self.from_addr: str = from_addr
         self.bufsize: int = 8192
         self.content_len: int = 0
@@ -245,6 +268,7 @@ class Request:
         self.keepalive: int = 1
         self.chunked_encoding: bool = False
         self.logger: logging.Logger = logging.getLogger(__name__)
+        self.cfg: Config = cfg
         self.reader: SocketReader = reader
         
 

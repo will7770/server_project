@@ -53,6 +53,11 @@ class Config:
         mount (str): Influences SCRIPT_NAME environ variable, tells the app where its root is.
         
             Default: '' (root)
+            
+            
+        servername (str): You're free to choose how to name the server!
+        
+            Default: 'deouserver'
     
             
     Examples:
@@ -74,6 +79,7 @@ class Config:
                  workertype: typing.Literal['sync'] = None,
                  logging_level: typing.Literal['critical', 'error', 'warning', 'info', 'debug'] = None,
                  mount: str = None,
+                 servername: str = None,
                  client_timeout: int = None,
                  avoid_keepalive: bool = None):
         # server config options
@@ -83,6 +89,7 @@ class Config:
         self.workertype: typing.Literal['sync'] = workertype or 'sync' 
         self.logging_level: typing.Literal['critical', 'error', 'warning', 'info', 'debug'] = logging_level or 'info' 
         self.mount: str = mount or ''
+        self.servername: str = servername or 'deouserver'
 
         # worker specific
         self.client_timeout: int = 5 or client_timeout
@@ -146,6 +153,7 @@ class Config:
         parser.add_argument('--avoid_keepalive', action='store_false')
         parser.add_argument('--logging_level', type=str, choices=['critical', 'error', 'warning', 'info', 'debug'], default='info')
         parser.add_argument('--mount', type=str, default="")
+        parser.add_argument('--servername', type=str, default='deouserver')
 
         args = parser.parse_args()
 
