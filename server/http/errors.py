@@ -18,12 +18,17 @@ class IncorrectMethodError(RequestBuildingError):
 
 class UnsupportedOrIncorrectHTTPVersion(UnsupportedOperation):
     def __init__(self, version: str):
-        super().__init__(f"Your http version ({version}) is incorrect or unsupported. Currently supporting version <= HTTP/1.1")
+        super().__init__(f"Client http version ({version}) is incorrect or unsupported. Currently supporting version HTTP/1.1")
 
 
 class UnsupportedEncoding(UnsupportedOperation):
     def __init__(self, encodings: list[str]):
         super().__init__(f"Received unsupported encodings: {', '.join(encodings)}. Only supporting chunked.")
+
+
+class ExpectationFailed(UnsupportedOperation):
+    def __init__(self, expectation: str):
+        super().__init__(f"Expect header expectation cannot be supported: {expectation}")
 
 
 class IncorrectHeader(RequestBuildingError):
@@ -45,6 +50,11 @@ class IncorrectHeadersFormat(RequestBuildingError):
 class DuplicateHeader(RequestBuildingError):
     def __init__(self, header: str):
         super().__init__(f"Duplicate header {header}")
+
+
+class MissingRequiredHeader(RequestBuildingError):
+    def __init__(self, header_name: str):
+        super().__init__(f"Required header {header_name} is missing")
 
 
 class HeaderOverflow(RequestBuildingError):

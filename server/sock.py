@@ -122,6 +122,8 @@ class SocketReader:
             
             # fill internal buffer to the exact amount or raise an error
             while left_to_read:
+                # TODO: i dont preallocate and use memoryviews here because client might disconnect
+                # midway. i dont wanna waste bytes. thing is, maybe its not that bad? memoryviews is always a big boost
                 while self.wptr-self.rptr < amount:
                     howmuch = self.fill(size)
                     if howmuch == 0:
@@ -134,11 +136,12 @@ class SocketReader:
                 
                 chunk = self.buf[self.rptr:self.rptr+read]
                 ret.extend(chunk)
+                self.rptr += len(chunk)
 
         if len(ret) < amount:
             raise IncompleteBufferResponse
         
-        self.advance(self.rptr+len(ret)+additionally_advance)
+        self.advance(self.rptr+additionally_advance)
         return ret
     
     
@@ -148,14 +151,13 @@ class SocketReader:
         if amount == 0:
             return 0
         
-        
         if amount == -1:
             usrbuf[:] = self.buf[self.rptr:self.wptr]
+            self.advance(self.wptr)
             return self.wptr-self.rptr
         
-        # Avoid writing over memoryview's length
-        if hasattr(usrbuf, 'nbytes'):
-            amount = min(usrbuf.nbytes, amount)
+        # dont let the amount be bigger than usrbuf can fit
+        amount = min(len(usrbuf), amount)
             
         while self.wptr-self.rptr < amount:
             howmuch = self.fill(amount)
@@ -163,7 +165,9 @@ class SocketReader:
                 break
             
         read = min((self.wptr-self.rptr), amount)
-        usrbuf[:read] = self.buf[self.rptr:self.rptr+read]
+        
+        with memoryview(self.buf) as view:
+            usrbuf[:read] = view[self.rptr:self.rptr+read]
         
         self.advance(self.rptr+read)
         return read

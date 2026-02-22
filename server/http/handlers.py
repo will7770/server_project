@@ -56,8 +56,6 @@ class Response:
             return False
         elif self.status in (204, 304):
             return False
-        elif self.request.version != 'HTTP/1.1':
-            return False
         return True
         
     
@@ -164,9 +162,8 @@ class Response:
             
             if type(val) != str or not HEADER_VALUE_RE.fullmatch(val):
                 raise IncorrectHeadersFormat(val)
-            
-            ltoken = token.lower()
-            if ltoken == 'content-length':
+
+            if token == 'Content-Length':
                 self.response_length = int(val)
 
             self.headers.append((token, val))
@@ -193,13 +190,14 @@ class Response:
         # relative path to mount
         path = path[len(mount):] if mount else path
         
+        # TODO: this will require special handling when unix sockets are implemented
         environ = {
             'SCRIPT_NAME': mount,
             'REQUEST_METHOD': req.method,
             'PATH_INFO': unquote(path),
             'SERVER_PROTOCOL': req.version,
             'QUERY_STRING': query_string,
-            'REMOTE_ADDR': self.sock.getpeername(),
+            'REMOTE_ADDR': sockname[0],
             'wsgi.version': (1, 0),
             'wsgi.url_scheme': 'http',
             'wsgi.input': self.set_body_wrapper(),
@@ -209,15 +207,15 @@ class Response:
             'wsgi.run_once': False,
             'wsgi.file_wrapper': FileWrapper
         }
-        environ['SERVER_NAME'], environ['SERVER_PORT'] = sockname
+        environ['SERVER_NAME'], environ['SERVER_PORT'] = self.sock.getsockname()
         # write headers to environ
         for header_pair in req.headers:
             name, value = header_pair
             name = name.replace('-', '_')
 
-            if name == 'Content_Type':
+            if name == 'CONTENT_TYPE':
                 environ[name.upper()] = value.strip()
-            elif name == 'Content_Length':
+            elif name == 'CONTENT_LENGTH':
                 # empty content_length if chunked encoding is being received
                 environ[name.upper()] = value.strip() if not self.request.chunked_encoding else 0
             else:
@@ -226,16 +224,26 @@ class Response:
                     continue
                 
                 name = 'HTTP_' + name
-                environ[name] = value.strip()
+                # concantenate duplicate headers which are allowed to be duplicated
+                if name in environ:
+                    environ[name] = f"{environ[name]},{value.strip()}"
+                else:
+                    environ[name] = value.strip()
 
         return environ
     
     
     def set_body_wrapper(self) -> ChunkedBodyWrapper | BodyWrapper:
+        if self.request.content_len and self.request.chunked_encoding:
+            # we dont do that here
+            raise IncorrectHeader("CONTENT-LENGTH")
+        
         if self.request.chunked_encoding:
             return ChunkedBodyWrapper(self.request.reader)
+        elif self.request.content_len:
+            return BodyWrapper(self.request.reader, self, self.request.content_len)
         else:
-            return BodyWrapper(self.request.reader, self.request.content_len)
+            return io.BytesIO()
         
         
     def close(self):
@@ -248,7 +256,7 @@ class Response:
 
 
 class Request:
-    __slots__ = ('from_addr', 'bufsize', 'content_len', 'host', 'headers', 'method',
+    __slots__ = ('from_addr', 'expects_100_continue', 'content_len', 'host', 'headers', 'method',
                   'path', 'version', 'keepalive', 'logger', 'reader', 'cfg', 'chunked_encoding')
     
     MAX_HEADER_AMOUNT = 128
@@ -258,9 +266,9 @@ class Request:
 
     def __init__(self, reader: SocketReader, from_addr: str, cfg: Config):
         self.from_addr: str = from_addr
-        self.bufsize: int = 8192
         self.content_len: int = 0
         self.host: str = None
+        self.expects_100_continue: bool = False
         self.headers: list[tuple[str, str]] = []
         self.method: str = None
         self.path: str = None
@@ -278,28 +286,13 @@ class Request:
 
     
     def parse_headers(self, headers_start: int) -> int:
-        # get headers end index
-        while True:
-            headers_end = self.reader.find(b'\r\n\r\n')
-            if headers_end-headers_start > self.MAX_HEADER_SIZE:
-                raise HeaderOverflow("Max headers size limit reached", self.MAX_HEADER_SIZE)
-            if headers_end >= 0:
-                break
-            if self.reader.fill() == 0:
-                raise ClientDisconnect
-        
         try:
-            raw_headers = self.reader.read_until(until_index=headers_end, additionally_advance=4)
-        except IncompleteBufferResponse:
-            self.logger.warning('Buffer returned incomplete data for address %s, disconnecting.', str(self.from_addr))
-            raise ClientDisconnect
-        
-        # begin headers parsing
-        try:
+            headers_end, raw_headers = self._get_headers(headers_start)
+            
             if len(raw_headers) > self.MAX_HEADER_SIZE:
                 raise HeaderOverflow("Max headers size limit reached", self.MAX_HEADER_SIZE)
             
-            raw_headers = [header.decode() for header in raw_headers.split(b"\r\n")]
+            raw_headers = [header for header in raw_headers.split("\r\n")]
             if len(raw_headers) > self.MAX_HEADER_AMOUNT:
                 raise HeaderOverflow("Max amount of headers reached", self.MAX_HEADER_AMOUNT)
             
@@ -311,6 +304,9 @@ class Request:
                     
                 k, v = header.split(":", 1)
 
+                # normalization
+                k = k.upper()
+                
                 # ignore headers with underscores
                 if '_' in k:
                     continue
@@ -327,18 +323,30 @@ class Request:
                     raise IncorrectHeader(header)
 
                 # TODO: nullify those on every keepalive request
-                if k == 'Content-Length':
+                # duplicate sensitive headers
+                if k == 'CONTENT-LENGTH':
                     if self.content_len:
                         raise DuplicateHeader(k)
                     self.content_len = int(v)
-                elif k == 'Host':
+                    
+                elif k == 'HOST':
                     if self.host:
                         raise DuplicateHeader(k)
                     self.host = v
-                elif k == 'Connection':
+                
+                # special
+                elif k == 'CONNECTION':
                     if v == 'close':
                         self.keepalive = 0
-                elif k == 'Transfer-Encoding':
+                
+                elif k == 'EXPECT':
+                    if v != '100-continue':
+                        raise ExpectationFailed(v)
+                    self.expects_100_continue = True
+                
+                elif k == 'TRANSFER-ENCODING':
+                    if self.chunked_encoding:
+                        raise DuplicateHeader(k)
                     encodings = v.split(',')
                     # if theres more than 1 encoding or the encoding isnt chunked, assume we cant do anything for the request
                     if len(encodings) > 1 or encodings[0] != 'chunked':
@@ -347,31 +355,19 @@ class Request:
 
                 self.headers.append((k, v))
             
+            # required for http 1.1
+            if not self.host:
+                raise MissingRequiredHeader('Host')
+            
             return headers_end
+        
         except (ValueError, UnicodeDecodeError):
             raise IncorrectHeadersFormat(raw_headers)
         
         
-    def parse_request_line(self) -> int:
-        while True:
-            idx = self.reader.find(b'\r\n')
-            if idx > self.MAX_REQUEST_LINE:
-                raise RequestLineOverflow(self.MAX_REQUEST_LINE)
-            
-            if idx >= 0:
-                req_line = self.reader.read_until(until_index=idx, additionally_advance=2)
-                if len(req_line) > self.MAX_REQUEST_LINE:
-                    raise RequestLineOverflow(self.MAX_REQUEST_LINE)
-                break
-            if self.reader.fill() == 0:
-                raise ClientDisconnect
-            
-        if len(req_line) < idx-self.reader.rptr:
-            self.logger.warning('Buffer returned incomplete data for address %s, disconnecting.', str(self.from_addr))
-            raise ClientDisconnect
-        
+    def parse_request_line(self) -> int:  
         try:
-            req_line = req_line.decode()
+            headers_start_idx, req_line = self._get_request_line()
             self.method, self.path, self.version = req_line.split(" ", 2)
             
             # method checks
@@ -393,9 +389,49 @@ class Request:
             if not version <= (1, 1):
                 raise UnsupportedOrIncorrectHTTPVersion(self.version)
             
-            return idx+2
+            return headers_start_idx+2
         except ValueError:
             raise MalformedRequestLineError(req_line)
+    
+    
+    def _get_request_line(self) -> tuple[int, str]:
+        while True:
+            idx = self.reader.find(b'\r\n')
+            if idx > self.MAX_REQUEST_LINE:
+                raise RequestLineOverflow(self.MAX_REQUEST_LINE)
+            
+            if idx >= 0:
+                req_line = self.reader.read_until(until_index=idx, additionally_advance=2)
+                if len(req_line) > self.MAX_REQUEST_LINE:
+                    raise RequestLineOverflow(self.MAX_REQUEST_LINE)
+                break
+            if self.reader.fill() == 0:
+                raise ClientDisconnect
+            
+        if len(req_line) < idx-self.reader.rptr:
+            self.logger.warning('Buffer returned incomplete data for address %s, disconnecting.', str(self.from_addr))
+            raise ClientDisconnect
+        
+        return idx, req_line.decode()
+    
+    
+    def _get_headers(self, headers_start: int) -> tuple[int, str]:
+        while True:
+            headers_end = self.reader.find(b'\r\n\r\n')
+            if headers_end-headers_start > self.MAX_HEADER_SIZE:
+                raise HeaderOverflow("Max headers size limit reached", self.MAX_HEADER_SIZE)
+            if headers_end >= 0:
+                break
+            if self.reader.fill() == 0:
+                raise ClientDisconnect
+        
+        try:
+            raw_headers = self.reader.read_until(until_index=headers_end, additionally_advance=4)
+        except IncompleteBufferResponse:
+            self.logger.warning('Buffer returned incomplete data for address %s, disconnecting.', str(self.from_addr))
+            raise ClientDisconnect
+
+        return headers_end, raw_headers.decode()
     
     
     def notify(self):

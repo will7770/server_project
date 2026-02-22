@@ -2,9 +2,14 @@ import typing
 from ..sock import SocketReader
 from ..errors import ClientDisconnect
 from collections.abc import Buffer
+from typing import TYPE_CHECKING
 
 
 
+if TYPE_CHECKING:
+    from .handlers import Response
+    
+    
 
 class FileWrapper:
     def __init__(self, filelike: typing.BinaryIO, chunksize: int = 8192):
@@ -29,19 +34,22 @@ class FileWrapper:
         
         
 class BodyWrapper:
-    __slots__ = ('reader', 'content_len')
+    __slots__ = ('reader', 'content_len', 'parent_response')
     
-    def __init__(self, reader: SocketReader, content_len: int = None):
+    def __init__(self, reader: SocketReader, parent_response: "Response", content_len: int = None):
         self.reader: SocketReader = reader
         self.content_len: int = content_len
+        self.parent_response: "Response" = parent_response
         
         
     def read(self, length: int = -1) -> bytearray:
+        # send 100-continue if required
+        self._send_100_continue()
+        
         if length < -1:
             raise TypeError("Length arg cant be less than -1")
         elif length == 0:
             return bytearray()
-        
 
         if length == -1:
             recv_limit = self.content_len
@@ -86,6 +94,8 @@ class BodyWrapper:
         
 
     def readinto(self, buf: Buffer) -> int:
+        self._send_100_continue()
+        
         length = len(buf)
 
         if length == 0:
@@ -117,6 +127,8 @@ class BodyWrapper:
 
     
     def readline(self, size = None) -> bytes:
+        self._send_100_continue()
+        
         if size == 0 or self.content_len == 0:
             return b""
         
@@ -154,7 +166,12 @@ class BodyWrapper:
             received += len(line)
         
         return ret
-            
+    
+    
+    def _send_100_continue(self):
+        if self.parent_response.request.expects_100_continue:
+            self.parent_response.sock.sendall(b"HTTP/1.1 100-Continue\r\n\r\n")
+            self.parent_response.request.expects_100_continue = False
             
             
 class ChunkedBodyWrapper:

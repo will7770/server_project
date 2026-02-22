@@ -49,7 +49,7 @@ class SyncWorker(BaseWorker):
     
     def handle_connection(self, server: socket.socket, client: socket.socket, addr: str):
         try:
-            request = Request(reader=SocketReader(client), from_addr=client.getsockname(), cfg=self.cfg)
+            request = Request(reader=SocketReader(client), from_addr=addr, cfg=self.cfg)
             self.handle_request(server, request, client, addr)
         except OSError as e:
             if e.errno not in (errno.EPIPE, errno.ECONNRESET, errno.ENOTCONN, errno.ECONNABORTED):
@@ -79,7 +79,7 @@ class SyncWorker(BaseWorker):
             # force connection: close on sync worker
             response.kill_keepalive = True
     
-            environ = response.build_environ(server.getsockname(), self.cfg.mount)
+            environ = response.build_environ(addr, self.cfg.mount)
 
             app_result = self.handle_app(response, self.app, environ)
 
